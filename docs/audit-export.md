@@ -413,7 +413,10 @@ shard records:
   outright whenever it is given at all, matching `backup_verify.rs`'s
   `parse_dsn_identity`: it pins the actual TCP destination, so two DSNs
   sharing one stay one pool however differently each spells the
-  hostname. A resolved host is lowercased only when it does not start
+  hostname. This holds even when `host` is itself a numeric address: an
+  explicit `hostaddr` alone decides the destination, so a differing
+  numeric `host` is discarded rather than folded in alongside it. A
+  resolved host is lowercased only when it does not start
   with `/`: a DNS name is case-insensitive, but a Unix-socket path is a
   case-sensitive filesystem path (`/run/PG-A` and `/run/pg-a` name
   different sockets). A DSN with no path is not treated as naming no

@@ -674,6 +674,20 @@ three, it is not conservative, since two aliases of one physical table
 can compare as distinct pools. Not fixed; replied explaining why a
 fix would require the connection this function is built not to make.
 
+A twenty-fifth review round (P1) found a gap in the thirteenth round's
+own `hostaddr`-wins-outright fix: a numeric `host` value was still
+folded into `hostaddrs` alongside an explicit `hostaddr`, rather than
+being discarded the way a non-numeric `host` already was.
+`host=10.0.0.1&hostaddr=10.0.0.2` therefore keyed as both addresses,
+while `host=alias&hostaddr=10.0.0.2` keyed only the one address, even
+though an explicit `hostaddr` pins the same destination regardless of
+what `host` says -- the same dangerous under-merging direction as
+every other fix in this stretch. A numeric TCP `host` entry is now
+skipped outright once `hostaddr` is explicit, matching how a
+non-numeric `host` was already handled.
+`from_dsns_groups_a_numeric_host_with_a_differing_explicit_hostaddr`
+pins the fix.
+
 **Zero migration, zero engine impact beyond the new parameter.** No new
 `WorkflowEvent` variant, no schema change, no change to any existing call
 site's behavior when the new flag is left at its default (disabled).

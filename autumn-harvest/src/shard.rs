@@ -1043,9 +1043,19 @@ fn canonical_dsn_key(dsn: &str) -> String {
         .iter()
         .map(ToString::to_string)
         .collect();
+    let explicit_hostaddr = !hostaddrs.is_empty();
     let mut hosts: Vec<String> = Vec::new();
     for h in config.get_hosts() {
         match h {
+            // A numeric `host` is skipped outright once `hostaddr` is
+            // explicit (issue #1266). `hostaddr` alone pins the TCP
+            // destination then. `host` text -- numeric or not -- only
+            // affects authentication, never which server is reached.
+            // Folding a numeric `host` into `hostaddrs` regardless made
+            // `host=10.0.0.1&hostaddr=10.0.0.2` key differently from
+            // `host=alias&hostaddr=10.0.0.2`, even though both pin the
+            // identical destination.
+            tokio_postgres::config::Host::Tcp(_) if explicit_hostaddr => {}
             tokio_postgres::config::Host::Tcp(name) => {
                 if let Ok(addr) = std::net::IpAddr::from_str(name) {
                     hostaddrs.push(addr.to_string());
@@ -2689,6 +2699,35 @@ mod tests {
             1,
             "a shared `hostaddr` names one physical destination, so these \
              must collapse into one group even though the hostnames differ"
+        );
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_groups_a_numeric_host_with_a_differing_explicit_hostaddr() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://10.0.0.1/shared?hostaddr=10.0.0.2".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://alias/shared?hostaddr=10.0.0.2".to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "an explicit hostaddr alone pins the TCP destination, so a \
+             numeric host text must not also be folded into the address \
+             set -- both DSNs pin the identical server and must collapse"
         );
     }
 
