@@ -361,7 +361,10 @@ shard records:
   also any other GUC an operator sets, so the whole string is not kept).
   The GUC name is matched case-insensitively in all three spellings,
   since PostgreSQL parameter names are: `SEARCH_PATH=shared` sets the
-  identical GUC as `search_path=shared`.
+  identical GUC as `search_path=shared`. The long form also normalizes
+  a hyphen to an underscore in the name before matching, the same way
+  Postgres maps a `--long-option` to its GUC, so `--search-path=shared`
+  sets the identical GUC as `--search_path=shared`.
   Postgres applies repeated `-c` flags in order, so
   a later `-c search_path=...` overrides an earlier one; the extraction
   keeps only the last occurrence, matching that sequential-`SET`

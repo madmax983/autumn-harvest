@@ -688,6 +688,37 @@ non-numeric `host` was already handled.
 `from_dsns_groups_a_numeric_host_with_a_differing_explicit_hostaddr`
 pins the fix.
 
+A twenty-sixth review round raised two more findings, both P2: one
+fixed, one declined.
+
+The first found that `--search-path=schema_a` and `--search_path=schema_a`
+set the identical GUC, since Postgres normalizes a hyphen to an
+underscore when mapping a long-form `--long-option` to its GUC name --
+but the long-form comparison only recognized the underscore spelling,
+so the two would extract as `None` and `Some("schema_a")`
+respectively, splitting two aliases that resolve identically.
+`strip_search_path_name_long_form` now normalizes a hyphen to an
+underscore in the long-form name before matching.
+`from_dsns_recognizes_a_hyphenated_long_form_search_path_name` pins
+the fix.
+
+The second restates a narrower variant of the eighth review round's
+already-accepted `$user`/username gap, not a cleanly separable new
+bug. It proposes substituting an explicit `-c role=...` value, when
+present in `options`, for the `$user` token in `search_path` -- but
+that only helps the narrow sub-case where `role` is *also* explicitly
+set via `options`. The far more common case, a DSN connecting directly
+as the target role through its own credentials with no `role=`
+override, would still leave `$user` unresolved, since resolving it
+needs the username this key deliberately drops (per the eighth
+round's reasoning, to keep the `harvest shard rebalance` topology,
+issue #964, merged). `extract_search_path`'s own parser gives `$user`
+no special treatment at all today -- it is read as a literal, opaque
+identifier, matching identically regardless of the actual user or
+role. A `role=`-only fix would patch one narrow trigger of that same
+gap while leaving its more common trigger untouched, an inconsistent
+partial fix. Not fixed; replied explaining why.
+
 **Zero migration, zero engine impact beyond the new parameter.** No new
 `WorkflowEvent` variant, no schema change, no change to any existing call
 site's behavior when the new flag is left at its default (disabled).

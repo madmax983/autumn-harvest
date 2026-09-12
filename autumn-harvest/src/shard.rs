@@ -1116,7 +1116,11 @@ fn canonical_dsn_key(dsn: &str) -> String {
 /// is matched case-insensitively in all three shapes (issue #1266).
 /// `PostgreSQL` parameter names are case-insensitive, so
 /// `SEARCH_PATH=shared` sets the identical GUC as `search_path=shared`.
-/// A quoted value with embedded spaces is not recognized. Treating an
+/// The long form also normalizes a hyphen to an underscore in the name
+/// before matching. `PostgreSQL` does the same when mapping a
+/// `--long-option` to its GUC, so `--search-path=shared` sets the
+/// identical GUC as `--search_path=shared`. A quoted value with
+/// embedded spaces is not recognized. Treating an
 /// unparsed `options` string as carrying no `search_path` is the
 /// conservative direction here. It only widens which DSNs compare as
 /// different, never the reverse.
@@ -1162,7 +1166,7 @@ fn extract_search_path(options: &str) -> Option<String> {
         } else if let Some(rest) = tok.strip_prefix("-c") {
             strip_search_path_name(rest).map(str::to_string)
         } else if let Some(rest) = tok.strip_prefix("--") {
-            strip_search_path_name(rest).map(str::to_string)
+            strip_search_path_name_long_form(rest).map(str::to_string)
         } else {
             None
         };
@@ -1182,6 +1186,20 @@ fn extract_search_path(options: &str) -> Option<String> {
 fn strip_search_path_name(token: &str) -> Option<&str> {
     let (name, value) = token.split_once('=')?;
     name.eq_ignore_ascii_case("search_path").then_some(value)
+}
+
+/// Splits a long-form `--name=value` token and returns `value` only
+/// when `name` names `search_path` (issue #1266). `PostgreSQL`
+/// normalizes a hyphen to an underscore in a long-form GUC name before
+/// matching it, so `--search-path=shared` sets the identical GUC as
+/// `--search_path=shared`. The owned, hyphen-normalized name cannot
+/// reuse `strip_search_path_name`'s borrow of the original token.
+#[cfg(feature = "db")]
+fn strip_search_path_name_long_form(token: &str) -> Option<&str> {
+    let (name, value) = token.split_once('=')?;
+    name.replace('-', "_")
+        .eq_ignore_ascii_case("search_path")
+        .then_some(value)
 }
 
 /// Splits a libpq `options` string into arguments, honoring its
@@ -2787,6 +2805,35 @@ mod tests {
             2,
             "the long-form `--search_path=` spelling must select a schema \
              just as `-c search_path=` does, so these must never collapse"
+        );
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_recognizes_a_hyphenated_long_form_search_path_name() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://db.example/shared?options=--search-path%3Dschema_a".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/shared?options=--search_path%3Dschema_a".to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "PostgreSQL normalizes a hyphen to an underscore in a \
+             long-form GUC name, so --search-path= and --search_path= \
+             select the same schema and must collapse"
         );
     }
 
