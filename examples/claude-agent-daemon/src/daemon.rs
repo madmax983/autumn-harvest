@@ -456,11 +456,16 @@ fn check_resumable(
         // A row that says RUNNING in a class this daemon cannot read is a row
         // it cannot drive. Leaving it out of the driven set stranded the
         // session in silence. See [`inspect::RunningSession::state_is_damaged`].
-        if row.state_is_damaged {
+        if row.state_is_damaged || row.name_is_damaged {
+            let column = if row.state_is_damaged {
+                "says it is running"
+            } else {
+                "names its workflow"
+            };
             return Err(format!(
-                "session {} says it is running, in a storage class this daemon cannot \
-                 read. The session stays RUNNING and nothing resumes it. Repair the \
-                 row, or remove it.",
+                "session {} {column}, in a storage class this daemon cannot read. The \
+                 session stays RUNNING and nothing resumes it. Repair the row, or \
+                 remove it.",
                 row.exec_id
             ));
         }

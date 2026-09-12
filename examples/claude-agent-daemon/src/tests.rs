@@ -9332,6 +9332,90 @@ fn a_running_session_in_the_wrong_storage_class_is_not_skipped() {
     assert!(damaged("blob-run"), "and the other one is");
 }
 
+/// A session whose WORKFLOW NAME is in the wrong class is not skipped either.
+///
+/// The same fault as the state, one column over, in the same query. The name
+/// was compared against a TEXT parameter. A row holding the right bytes in
+/// the wrong class was excluded before the startup check could see it.
+///
+/// A session of ANOTHER workflow is still excluded, which is what the name is
+/// there to decide.
+#[test]
+fn a_running_session_naming_its_workflow_in_the_wrong_class_is_not_skipped() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let db = dir.path().join("name-class.db");
+    let writer = rusqlite::Connection::open(&db).expect("the database opens");
+    fixture_table(&writer);
+    for (exec, name) in [
+        ("text-name", format!("'{WORKFLOW_NAME}'")),
+        ("blob-name", format!("CAST('{WORKFLOW_NAME}' AS BLOB)")),
+        // Another workflow's session, which this daemon must never drive.
+        ("other-text", "'other_workflow'".to_string()),
+        ("other-blob", "CAST('other_workflow' AS BLOB)".to_string()),
+    ] {
+        writer
+            .execute(
+                &format!(
+                    "INSERT INTO harvest_executions                      VALUES (?1, {name}, 'RUNNING', ?2, NULL, NULL)"
+                ),
+                rusqlite::params![exec, READABLE_TASK],
+            )
+            .expect("the row is recorded");
+    }
+    drop(writer);
+
+    let reader = inspect::open(&db).expect("the reader opens");
+    let running = inspect::running(&reader, WORKFLOW_NAME).expect("the running rows read");
+    let named: Vec<&str> = running.iter().map(|row| row.exec_id.as_str()).collect();
+    assert!(
+        named.contains(&"blob-name"),
+        "a row naming this workflow in the wrong class must still be seen: {named:?}"
+    );
+    assert!(
+        !named.contains(&"other-text") && !named.contains(&"other-blob"),
+        "and another workflow's sessions must not be: {named:?}"
+    );
+    let damaged = |exec: &str| -> bool {
+        running
+            .iter()
+            .find(|row| row.exec_id == exec)
+            .expect("the session is named")
+            .name_is_damaged
+    };
+    assert!(!damaged("text-name"), "the readable row is not damaged");
+    assert!(damaged("blob-name"), "and the other one is");
+}
+
+/// An id in the wrong class fails the read, rather than naming another row.
+///
+/// This completes the sweep of the columns that query touches. The id is read
+/// into a `String`, and `rusqlite` refuses a BLOB there, so the whole query
+/// fails and the startup refuses. A row that cannot be named is never
+/// silently skipped.
+#[test]
+fn a_running_row_whose_id_is_in_the_wrong_class_fails_the_read() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let db = dir.path().join("id-class.db");
+    let writer = rusqlite::Connection::open(&db).expect("the database opens");
+    fixture_table(&writer);
+    writer
+        .execute(
+            "INSERT INTO harvest_executions              VALUES (CAST('blob-id' AS BLOB), ?1, 'RUNNING', ?2, NULL, NULL)",
+            rusqlite::params![WORKFLOW_NAME, READABLE_TASK],
+        )
+        .expect("the row is recorded");
+    drop(writer);
+
+    let reader = inspect::open(&db).expect("the reader opens");
+    let Err(refused) = inspect::running(&reader, WORKFLOW_NAME) else {
+        panic!("an id this daemon cannot read must fail the read");
+    };
+    assert!(
+        refused.contains("cannot read the running sessions"),
+        "the failure must say what it was doing: {refused}"
+    );
+}
+
 /// The daemon refuses to start over a session it cannot drive.
 ///
 /// The startup seeds the driven set from the running query. A row it cannot

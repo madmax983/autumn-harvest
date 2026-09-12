@@ -52,6 +52,17 @@ pub struct RunningSession {
     /// were in. A state in another class entirely is not matched at all,
     /// because it claims no live session to strand.
     pub state_is_damaged: bool,
+    /// Does this row name its workflow in a class this daemon cannot read?
+    ///
+    /// The same fault as [`Self::state_is_damaged`], one column over. The
+    /// name is matched by its BYTES for that reason, so a session of this
+    /// workflow is found whatever class holds the name.
+    ///
+    /// Every column this query tests carries the same hazard, and each is
+    /// answered. The name and the state are matched by their bytes. The task
+    /// is guarded by its class, which leaves it unread. The id fails the
+    /// whole query rather than naming the wrong row.
+    pub name_is_damaged: bool,
 }
 
 /// The recorded task of a RUNNING session, cut to what a startup check reads.
@@ -269,9 +280,10 @@ pub fn running(conn: &Connection, workflow_name: &str) -> Result<Vec<RunningSess
             "SELECT exec_id, \
                     CASE WHEN typeof(input_json) = 'text' \
                          THEN cast(input_json as blob) END, \
-                    typeof(state) <> 'text' \
+                    typeof(state) <> 'text', \
+                    typeof(workflow_name) <> 'text' \
              FROM harvest_executions \
-             WHERE workflow_name = ?1 \
+             WHERE cast(workflow_name as blob) = cast(?1 as blob) \
              AND cast(state as blob) = cast('RUNNING' as blob) ORDER BY rowid",
         )
         .map_err(|e| format!("cannot prepare the running-session query: {e}"))?;
@@ -284,6 +296,7 @@ pub fn running(conn: &Connection, workflow_name: &str) -> Result<Vec<RunningSess
                     .as_deref()
                     .and_then(recorded),
                 state_is_damaged: row.get(2)?,
+                name_is_damaged: row.get(3)?,
             })
         })
         .map_err(|e| format!("cannot read the running sessions: {e}"))?;
