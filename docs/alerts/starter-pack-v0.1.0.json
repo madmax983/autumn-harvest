@@ -1364,7 +1364,7 @@
       ],
       "prometheus": {
         "mode": "native",
-        "notes": "Two expressions, because the threshold alone is blind to the worst case. harvest_audit_export_lag_high catches an exporter that is running and falling behind. harvest_audit_export_absent catches no exporter running ANYWHERE: the gauge then has no series, so the threshold evaluates over an empty vector and can never fire. absent() is safe here, unlike in harvest_scanner_stalled where an API-only replica legitimately exports no series - it is false as soon as any one process exports any shard, so a mixed fleet does not trip it. What NEITHER catches: (a) an exporter alive but unable to read a shard - the gauge keeps serving its last value, commonly 0, so the series is neither high nor absent; (b) PARTIAL shard coverage - absent() is false as soon as any shard reports, so a shard that has never been scanned is invisible to both expressions even though its records are not reaching the SIEM. For (b), template one absence rule per configured shard (absent(harvest_audit_export_lag{shard=\"N\"})) from your own shard inventory - the pack cannot do it generically because it does not know your shard set. There is no metric-only detection for that today (autumn-foundation/autumn-harvest#1268); treat last_error and unavailable_shards on GET /admin/audit-export as authoritative. Do NOT substitute a `time() - timestamp(...)` staleness rule - Prometheus stamps each scraped sample with the scrape time, so it never fires on a stale-but-exposed gauge.",
+        "notes": "Two expressions, because the threshold alone is blind to the worst case. harvest_audit_export_lag_high catches an exporter that is running and falling behind. harvest_audit_export_absent catches no exporter running ANYWHERE: the gauge then has no series, so the threshold evaluates over an empty vector and can never fire. absent() is safe here, unlike in harvest_scanner_stalled where an API-only replica legitimately exports no series - it is false as soon as any one process exports any shard, so a mixed fleet does not trip it. What harvest_audit_export_absent still does NOT catch: PARTIAL shard coverage - absent() is false as soon as any shard reports, so a shard that has never been scanned is invisible to both expressions even though its records are not reaching the SIEM. Template one absence rule per configured shard (absent(harvest_audit_export_lag{shard=\"N\"})) from your own shard inventory - the pack cannot do it generically because it does not know your shard set. An exporter alive but unable to read a shard - the gauge keeps serving its last value, commonly 0, so the series is neither high nor absent - is now caught by harvest_audit_export_unobservable (autumn-foundation/autumn-harvest#1268), the companion rule on harvest.audit.export_observed. Do NOT substitute a `time() - timestamp(...)` staleness rule - Prometheus stamps each scraped sample with the scrape time, so it never fires on a stale-but-exposed gauge.",
         "expressions": [
           {
             "name": "harvest_audit_export_lag_high",
@@ -1383,6 +1383,39 @@
         "POST /admin/audit-export/redrive (after sink-side data loss only - it re-exports, it does not fix a stalled sink)"
       ],
       "runbook": "docs/runbooks/harvest-alerts.md#harvest_audit_export_lag_high"
+    },
+    {
+      "id": "harvest_audit_export_unobservable",
+      "status": "enforceable",
+      "signal_source": "harvest.audit.export_observed{shard}, emitted every export scanner tick that reaches a shard (issue #1268).",
+      "default_threshold": "Ticket when harvest_audit_export_observed is 0 for a shard for 10 minutes.",
+      "severity": "ticket",
+      "owner_persona": "security/compliance engineer",
+      "description": "The exporter could not read this shard's cursor, or its lag, or could not even acquire a connection to the shard this tick. harvest_audit_export_lag is not a reliable signal here: a Prometheus gauge keeps its last value, so the lag reading for this shard is frozen, commonly at 0, and looks healthy. This is the companion signal harvest_audit_export_lag_high's own notes call for: it is the metric-only detection for a shard the exporter cannot observe, distinct from a shard missing from shard_assignments entirely, which neither this rule nor the lag threshold can see -- only a per-shard absent(harvest_audit_export_lag{shard=\"N\"}) rule templated from your own inventory catches that case; see the runbook's coverage table.",
+      "first_action": "curl -s $HARVEST/admin/audit-export | jq '.shards[] | select(.shard == <id>)'",
+      "dependencies": [
+        {
+          "ref": "#1268",
+          "status": "shipped",
+          "surface": "harvest.audit.export_observed and GET /admin/audit-export"
+        }
+      ],
+      "prometheus": {
+        "mode": "native",
+        "notes": "The companion to harvest_audit_export_lag_high: that rule's threshold is blind to a shard the exporter cannot observe, because a stale-but-present gauge is not a high value. This rule fires on observed == 0 directly, so it does not depend on what the lag gauge happens to be frozen at.",
+        "expressions": [
+          {
+            "name": "harvest_audit_export_unobservable",
+            "expr": "min by (shard) (harvest_audit_export_observed) == 0",
+            "for": "10m"
+          }
+        ]
+      },
+      "management_checks": [
+        "GET /admin/audit-export (per-shard cursor, lag, delivery_state, last_error)",
+        "Worker logs for '[audit_export] failed to get connection to shard' or 'timed out acquiring a connection for this shard'"
+      ],
+      "runbook": "docs/runbooks/harvest-alerts.md#harvest_audit_export_unobservable"
     }
   ]
 }

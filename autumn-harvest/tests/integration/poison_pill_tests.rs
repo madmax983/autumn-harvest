@@ -214,6 +214,7 @@ async fn orphan_under_threshold_is_requeued() {
         &mut conn,
         3,
         10,
+        None,
         &metrics,
         &autumn_harvest::payload_codec::PayloadCodecs::default(),
     )
@@ -250,6 +251,7 @@ async fn orphan_at_threshold_is_quarantined() {
         &mut conn,
         3,
         10,
+        None,
         &metrics,
         &autumn_harvest::payload_codec::PayloadCodecs::default(),
     )
@@ -319,6 +321,7 @@ async fn live_worker_task_is_not_reclaimed() {
         &mut conn,
         3,
         10,
+        None,
         &metrics,
         &autumn_harvest::payload_codec::PayloadCodecs::default(),
     )
@@ -348,6 +351,7 @@ async fn threshold_zero_never_quarantines() {
         &mut conn,
         0,
         10,
+        None,
         &metrics,
         &autumn_harvest::payload_codec::PayloadCodecs::default(),
     )
@@ -461,6 +465,7 @@ async fn poison_pill_counts_toward_schedule_auto_pause() {
         &mut conn,
         3,
         10,
+        None,
         &metrics,
         &autumn_harvest::payload_codec::PayloadCodecs::default(),
     )

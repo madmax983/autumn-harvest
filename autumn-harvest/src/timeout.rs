@@ -4673,11 +4673,21 @@ pub fn spawn_timeout_checker_for_shard(
                 },
                 Ok(Err(e)) => {
                     tracing::error!(error = %e, "failed to acquire DB connection for timeout check");
+                    mark_audit_export_unobserved_for_checker_shard(
+                        &*telemetry.metrics,
+                        sharded_pool.as_ref(),
+                        &shard_assignments,
+                    );
                 }
                 Err(_elapsed) => {
                     tracing::error!(
                         ?interval,
                         "pool acquisition exceeded the tick interval; skipping this tick"
+                    );
+                    mark_audit_export_unobserved_for_checker_shard(
+                        &*telemetry.metrics,
+                        sharded_pool.as_ref(),
+                        &shard_assignments,
                     );
                 }
             }
@@ -4704,6 +4714,52 @@ pub fn spawn_timeout_checker_for_shard(
             crate::scanner_health::deregister_scanner(owner);
         }
     })
+}
+
+/// Mark unobserved, for audit export, every shard this checker's own tick
+/// would have driven `fire_due_audit_exports` over (issue #1268, Codex
+/// review).
+///
+/// `enforce_timeouts_once` — and therefore `fire_due_audit_exports` — never
+/// runs on a tick where this loop cannot get its own connection. Without
+/// this call, every such shard leaves `harvest.audit.export_observed`
+/// frozen at its last reading, which can be a stale `1` from before the
+/// outage.
+///
+/// Deliberately ignores this loop's own `shard` label. It matches on
+/// `sharded_pool`/`shard_assignments` alone, mirroring
+/// `fire_due_audit_exports`'s own sharded/unsharded split exactly. The
+/// public, legacy `spawn_timeout_checker` entry point passes `shard: None`
+/// for a process-wide loop. That loop can still cover a real, non-default
+/// `shard_assignments` list (e.g. `[7]`). Labelling only the pool's default
+/// shard there would mark the wrong shard unobserved, leaving the
+/// actually-affected one frozen.
+///
+/// A no-op when audit export is not configured (AC8): this checker loop
+/// runs for every worker, and most never touch audit export.
+fn mark_audit_export_unobserved_for_checker_shard(
+    metrics: &(dyn MetricsRecorder + Send + Sync),
+    sharded_pool: Option<&crate::shard::ShardedDbPool>,
+    shard_assignments: &[crate::types::ShardId],
+) {
+    if !crate::audit_export::is_configured() {
+        return;
+    }
+    match sharded_pool {
+        Some(_) if !shard_assignments.is_empty() => {
+            for shard in shard_assignments {
+                metrics.record_audit_export_observed(
+                    u16::try_from(shard.as_i32()).unwrap_or(u16::MAX),
+                    false,
+                );
+            }
+        }
+        _ => {
+            let shard_id = sharded_pool.map_or(0, |pool| pool.default_shard().as_i32());
+            metrics
+                .record_audit_export_observed(u16::try_from(shard_id).unwrap_or(u16::MAX), false);
+        }
+    }
 }
 
 /// Terminate RUNNING workflow executions whose durable event count has reached

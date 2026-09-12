@@ -364,6 +364,7 @@ async fn spawned_poison_pill_reclaimer_registers_ticks_and_deregisters() {
         Duration::from_millis(50),
         3,
         60,
+        None,
         telemetry,
         Some(ShardId::new(0)),
         autumn_harvest::payload_codec::PayloadCodecs::default(),

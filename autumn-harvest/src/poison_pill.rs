@@ -16,6 +16,13 @@
 //! The pure decision logic ([`quarantine_decision`]) carries no database
 //! dependency and is unit-tested without the `db` feature. The DB scanner
 //! ([`reclaim_orphaned_tasks`]) is gated behind `db`.
+//!
+//! [`reclaim_orphaned_tasks`] also runs a second, independent backstop pass
+//! (issue #1459). A `workflow` decision-cycle task can stay `RUNNING` on a
+//! worker that is still alive. This happens when the in-process timeout's
+//! own reset call fails to reach the database in time. The worker-liveness
+//! pass above never catches that case, since the worker itself never died.
+//! See [`stuck_running_tasks_query`].
 
 /// What to do with an orphaned `RUNNING` task whose claiming worker has died.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,13 +61,18 @@ pub struct ReclaimSummary {
     pub requeued: usize,
     /// Orphaned tasks quarantined to the dead-letter queue.
     pub quarantined: usize,
+    /// Stuck `workflow` tasks re-queued via the live-worker backstop path
+    /// (issue #1459). Distinct from `requeued`: that count is the
+    /// dead-worker orphan path, this one requires no worker liveness signal
+    /// at all. See [`stuck_running_tasks_query`].
+    pub stuck_requeued: usize,
 }
 
 impl ReclaimSummary {
     /// Total tasks acted on this sweep.
     #[must_use]
     pub const fn total(&self) -> usize {
-        self.requeued + self.quarantined
+        self.requeued + self.quarantined + self.stuck_requeued
     }
 }
 
@@ -71,6 +83,12 @@ impl ReclaimSummary {
 /// so an absurd `worker_heartbeat_interval` can never overflow or panic. A
 /// one-year staleness window is already far beyond any sane fleet config.
 pub const MAX_WORKER_STALE_SECS: i64 = 31_536_000;
+
+/// Upper bound (one year, in seconds) applied to the stuck-running threshold.
+///
+/// Mirrors [`MAX_WORKER_STALE_SECS`]'s overflow-safety role for
+/// [`stuck_running_tasks_query`].
+pub const MAX_STUCK_RUNNING_SECS: i64 = 31_536_000;
 
 /// SQL selecting `RUNNING` tasks whose claiming worker is no longer live.
 ///
@@ -94,6 +112,37 @@ pub const fn orphaned_running_tasks_query() -> &'static str {
        )"
 }
 
+/// SQL selecting `RUNNING` `workflow` decision-cycle tasks stuck long past any
+/// legitimate single decision cycle's budget, regardless of worker liveness
+/// (issue #1459).
+///
+/// The engine hard-cancels a workflow-task dispatch once it exceeds its
+/// configured `workflow_task_timeout` (`run_under_workflow_body_budget` in
+/// `worker.rs`). A `workflow` row still `RUNNING` well past that budget did
+/// not merely run long: its processing already stopped. The reset call
+/// (`reset_timed_out_workflow_task`) is the only thing that could still leave
+/// the row `RUNNING`. It failed — most often a database-pool connection that
+/// could not be acquired within its own bounded retry budget.
+///
+/// [`orphaned_running_tasks_query`] does not catch this case: the claiming
+/// worker is still alive, busy with other tasks, so the dead-worker liveness
+/// check never fires.
+///
+/// `activity` tasks are deliberately excluded. Their own
+/// `start_to_close_timeout` is unrelated to `workflow_task_timeout` and can
+/// legitimately keep a row `RUNNING` for a long time.
+///
+/// `$1` is the stuck-running threshold in seconds (BIGINT).
+#[must_use]
+pub const fn stuck_running_tasks_query() -> &'static str {
+    "SELECT * FROM harvest_task_queue t \
+     WHERE t.state = 'RUNNING' \
+       AND t.worker_id IS NOT NULL \
+       AND t.task_type = 'workflow' \
+       AND t.started_at IS NOT NULL \
+       AND t.started_at < NOW() - ($1::bigint * INTERVAL '1 second')"
+}
+
 // ---------------------------------------------------------------------------
 // Orphan-reclaim scanner (DB)
 // ---------------------------------------------------------------------------
@@ -110,7 +159,10 @@ mod scanner {
     use diesel_async::RunQueryDsl;
     use tokio_util::sync::CancellationToken;
 
-    use super::{ReclaimAction, ReclaimSummary, orphaned_running_tasks_query, quarantine_decision};
+    use super::{
+        ReclaimAction, ReclaimSummary, orphaned_running_tasks_query, quarantine_decision,
+        stuck_running_tasks_query,
+    };
     use crate::completion_trigger::DeferredTriggerStart;
     use crate::error::{HarvestError, HarvestResult};
     use crate::event::WorkflowEvent;
@@ -211,6 +263,88 @@ mod scanner {
                     // previous_failure() on the next attempt.
                     dsl::error.eq(None::<String>),
                     dsl::crash_strikes.eq(new_strikes),
+                    dsl::scheduled_at.eq(Utc::now()),
+                ))
+                .execute(conn)
+                .await
+                .map_err(crate::error::database_error)?;
+            Ok(true)
+        }))
+        .await
+    }
+
+    /// Re-queue a `workflow` task stuck `RUNNING` past the stuck-running
+    /// backstop threshold, on a worker that may still be alive (issue #1459).
+    ///
+    /// Never touches `crash_strikes` and never quarantines. Being stuck this
+    /// way says nothing about the task itself. It means a reset attempt could
+    /// not reach the database in time, not that the task is poisonous.
+    ///
+    /// Returns `true` if the row was actually transitioned (it was still the
+    /// same stuck `RUNNING` attempt), `false` if a concurrent actor already
+    /// handled it.
+    async fn requeue_stuck_task(
+        conn: &mut AsyncPgConnection,
+        task: &TaskQueueItem,
+        stuck_running_secs: i64,
+    ) -> HarvestResult<bool> {
+        use crate::schema::harvest_task_queue::dsl;
+
+        // Row shape re-read fresh under the lock below: state, worker id,
+        // crash strikes, task type, started-at.
+        type StuckRowState = (
+            String,
+            Option<String>,
+            i32,
+            String,
+            Option<chrono::DateTime<Utc>>,
+        );
+
+        let task_id = task.id;
+        let Some(worker_id) = task.worker_id.clone() else {
+            return Ok(false);
+        };
+        let prior_strikes = task.crash_strikes;
+
+        Box::pin(conn.transaction::<bool, HarvestError, _>(async |conn| {
+            // Lock the row and re-verify it is still the same stuck attempt.
+            // `started_at` is re-read fresh under the lock, not taken from
+            // the pre-scan snapshot. A reset or a fresh re-claim between the
+            // scan and here always changes it. Re-checking its age here is
+            // what stops this from undoing a legitimate new attempt.
+            let current: Option<StuckRowState> = dsl::harvest_task_queue
+                .find(task_id)
+                .for_update()
+                .select((
+                    dsl::state,
+                    dsl::worker_id,
+                    dsl::crash_strikes,
+                    dsl::task_type,
+                    dsl::started_at,
+                ))
+                .first(conn)
+                .await
+                .optional()
+                .map_err(crate::error::database_error)?;
+            let cutoff = Utc::now() - chrono::Duration::seconds(stuck_running_secs);
+            match current {
+                Some((state, Some(wid), strikes, task_type, Some(started_at)))
+                    if state == "RUNNING"
+                        && wid == worker_id
+                        && strikes == prior_strikes
+                        && task_type == "workflow"
+                        && started_at < cutoff => {}
+                _ => return Ok(false),
+            }
+
+            diesel::update(dsl::harvest_task_queue.find(task_id))
+                .set((
+                    dsl::state.eq("PENDING"),
+                    dsl::worker_id.eq(None::<String>),
+                    dsl::started_at.eq(None::<chrono::DateTime<Utc>>),
+                    dsl::sticky_worker_id.eq(None::<String>),
+                    dsl::sticky_until.eq(None::<chrono::DateTime<Utc>>),
+                    dsl::last_heartbeat_at.eq(None::<chrono::DateTime<Utc>>),
                     dsl::scheduled_at.eq(Utc::now()),
                 ))
                 .execute(conn)
@@ -606,16 +740,24 @@ mod scanner {
         Ok(acted)
     }
 
-    /// Scan for `RUNNING` tasks whose claiming worker has died and reclaim them.
+    /// Reclaim `RUNNING` tasks orphaned by a dead worker, then (issue #1459)
+    /// tasks stuck long past their budget regardless of worker liveness.
     ///
-    /// Each orphan's `crash_strikes` is incremented; the task is then re-queued
-    /// (under threshold) or quarantined to the DLQ (at or over threshold) per
-    /// [`quarantine_decision`]. Runs shard-local against the connection's
-    /// database.
+    /// Each dead-worker orphan's `crash_strikes` is incremented; the task is
+    /// then re-queued (under threshold) or quarantined to the DLQ (at or over
+    /// threshold) per [`quarantine_decision`]. Runs shard-local against the
+    /// connection's database.
     ///
     /// `worker_stale_secs` is how long a worker may go without a heartbeat
     /// before its in-flight tasks are considered orphaned (typically
     /// `2 × worker_heartbeat_interval`).
+    ///
+    /// `stuck_running_secs` gates the second, independent backstop pass
+    /// ([`stuck_running_tasks_query`]): `None` disables it, so behavior is
+    /// unchanged from before issue #1459. `Some(secs)` re-queues a stuck
+    /// `workflow` task whether or not its worker is alive. This pass never
+    /// touches `crash_strikes` and never quarantines — being stuck this way
+    /// says nothing about the task itself.
     ///
     /// # Errors
     ///
@@ -624,6 +766,7 @@ mod scanner {
         conn: &mut AsyncPgConnection,
         threshold: i32,
         worker_stale_secs: i64,
+        stuck_running_secs: Option<i64>,
         metrics: &dyn MetricsRecorder,
         // Issue #1243: forwarded to the quarantine path, whose
         // `WorkflowFailed` carries a payload-bearing `details` field.
@@ -673,6 +816,21 @@ mod scanner {
                 }
             }
         }
+
+        if let Some(stuck_running_secs) = stuck_running_secs {
+            let stuck_running_secs = stuck_running_secs.clamp(0, super::MAX_STUCK_RUNNING_SECS);
+            let stuck: Vec<TaskQueueItem> = diesel::sql_query(stuck_running_tasks_query())
+                .bind::<diesel::sql_types::BigInt, _>(stuck_running_secs)
+                .load(conn)
+                .await
+                .map_err(crate::error::database_error)?;
+            for task in stuck {
+                if requeue_stuck_task(conn, &task, stuck_running_secs).await? {
+                    summary.stuck_requeued += 1;
+                    crate::queue::record_pending_hints(conn, &[task.id]).await;
+                }
+            }
+        }
         Ok(summary)
     }
 
@@ -680,9 +838,18 @@ mod scanner {
     /// tasks. Stops when `cancel` is triggered.
     ///
     /// Equivalent to [`spawn_poison_pill_reclaimer_for_shard`] with no shard
-    /// attributed. The shard is only used to label this loop in the
-    /// `scanner_liveness` health check (issue #797); it never affects which
-    /// tasks the loop reclaims -- that is the connection's own database.
+    /// attributed and the issue #1459 stuck-running backstop disabled. The
+    /// shard is only used to label this loop in the `scanner_liveness` health
+    /// check (issue #797); it never affects which tasks the loop reclaims --
+    /// that is the connection's own database.
+    ///
+    /// This function's signature is frozen. See
+    /// `the_public_spawn_signatures_are_unchanged_by_shard_attribution` in
+    /// `tests/integration/scanner_tick_db_tests.rs`. The reason matches why
+    /// the shard parameter never reached it. An embedder calling this
+    /// directly should not have to opt into a feature it never asked for.
+    /// Call [`spawn_poison_pill_reclaimer_for_shard`] directly to enable the
+    /// backstop.
     #[must_use]
     pub fn spawn_poison_pill_reclaimer(
         pool: diesel_async::pooled_connection::deadpool::Pool<AsyncPgConnection>,
@@ -700,6 +867,7 @@ mod scanner {
             interval,
             threshold,
             worker_stale_secs,
+            None,
             telemetry,
             None,
             payload_codecs,
@@ -727,6 +895,10 @@ mod scanner {
         interval: std::time::Duration,
         threshold: i32,
         worker_stale_secs: i64,
+        // Issue #1459: gates the stuck-running backstop pass (a `workflow`
+        // task stuck long past its decision-cycle budget, worker liveness
+        // notwithstanding). `None` disables it, matching pre-#1459 behavior.
+        stuck_running_secs: Option<i64>,
         telemetry: std::sync::Arc<crate::telemetry::TelemetryConfig>,
         shard: Option<crate::types::ShardId>,
         // Issue #1243: owned so it can move into the spawned loop. The
@@ -756,6 +928,7 @@ mod scanner {
                             &mut conn,
                             threshold,
                             worker_stale_secs,
+                            stuck_running_secs,
                             &*telemetry.metrics,
                             &payload_codecs,
                         )
@@ -765,6 +938,7 @@ mod scanner {
                                 tracing::warn!(
                                     requeued = summary.requeued,
                                     quarantined = summary.quarantined,
+                                    stuck_requeued = summary.stuck_requeued,
                                     "reclaimed orphaned poison-pill tasks"
                                 );
                             }
@@ -852,11 +1026,31 @@ mod tests {
     }
 
     #[test]
-    fn reclaim_summary_total_sums_both_buckets() {
+    fn reclaim_summary_total_sums_all_three_buckets() {
         let summary = ReclaimSummary {
             requeued: 2,
             quarantined: 1,
+            stuck_requeued: 4,
         };
-        assert_eq!(summary.total(), 3);
+        assert_eq!(summary.total(), 7);
+    }
+
+    #[test]
+    fn stuck_query_targets_running_workflow_rows_past_deadline() {
+        let sql = stuck_running_tasks_query();
+        assert!(sql.contains("harvest_task_queue"), "scans the task queue");
+        assert!(sql.contains("state = 'RUNNING'"), "only RUNNING rows");
+        assert!(
+            sql.contains("task_type = 'workflow'"),
+            "activity tasks are excluded -- their own start_to_close is unrelated"
+        );
+        assert!(
+            sql.contains("started_at"),
+            "stuck is judged by wall-clock age, not worker liveness"
+        );
+        assert!(
+            !sql.contains("harvest_workers"),
+            "this backstop applies regardless of worker liveness"
+        );
     }
 }
