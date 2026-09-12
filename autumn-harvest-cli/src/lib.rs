@@ -7506,6 +7506,10 @@ pub async fn execute(cli: &Cli) -> Result<Value, CliError> {
         ApiMethod::Post => client.post(url),
         ApiMethod::Delete => client.delete(url),
     };
+    // A dev-profile Autumn app answers an unrecognized-Accept validation
+    // error with its HTML debug page, not the documented JSON error body.
+    // Without this header, the CLI dumps that markup verbatim.
+    let builder = builder.header(reqwest::header::ACCEPT, "application/json");
     let builder = if let Some(token) = &cli.token {
         builder.bearer_auth(token)
     } else {
