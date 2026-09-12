@@ -35,6 +35,10 @@
 //!   unconfigured counterpart — the silent-loss hole a naive retention sweep
 //!   would open.
 //! - `every_batch_is_hmac_signed_and_carries_its_shard_and_seq_range` — AC1/AC4.
+//! - `a_shard_the_scanner_cannot_acquire_a_connection_for_is_marked_unobserved`
+//!   and `a_shard_whose_database_is_unreachable_is_marked_unobserved` — issue
+//!   #1268: `harvest.audit.export_observed` reports an unreachable shard, so
+//!   the lag gauge is never the only signal.
 
 use std::sync::{Arc, Mutex};
 
@@ -169,16 +173,24 @@ impl AuditSink for RecordingSink {
     }
 }
 
-/// Records `harvest.audit.export_lag` / `harvest.audit.exported` samples.
+/// Records `harvest.audit.export_lag` / `harvest.audit.export_observed` /
+/// `harvest.audit.exported` samples.
 #[derive(Default)]
 struct RecordingMetrics {
     lag: Mutex<Vec<(u16, f64)>>,
+    observed: Mutex<Vec<(u16, bool)>>,
     exported: Mutex<Vec<(u16, u64)>>,
 }
 
 impl MetricsRecorder for RecordingMetrics {
     fn record_audit_export_lag(&self, shard: u16, seconds: f64) {
         self.lag.lock().expect("lag lock").push((shard, seconds));
+    }
+    fn record_audit_export_observed(&self, shard: u16, observed: bool) {
+        self.observed
+            .lock()
+            .expect("observed lock")
+            .push((shard, observed));
     }
     fn record_audit_exported(&self, shard: u16, count: u64) {
         self.exported
@@ -268,7 +280,8 @@ async fn unconfigured_export_never_touches_anything() {
     let (mut conn, _c) = make_conn().await;
     insert_audit_rows(&mut conn, 5).await;
 
-    let processed = fire_due_audit_exports(&mut conn, &None, &[], &NoOpMetrics)
+    let metrics = RecordingMetrics::default();
+    let processed = fire_due_audit_exports(&mut conn, &None, &[], &metrics)
         .await
         .expect("scanner runs");
     assert_eq!(processed, 0, "no sink configured means no work at all");
@@ -283,6 +296,16 @@ async fn unconfigured_export_never_touches_anything() {
             .expect("status query"),
         None,
         "no cursor row is created when no sink is configured"
+    );
+    assert!(
+        metrics.lag.lock().expect("lag").is_empty(),
+        "the lag gauge must not be touched when no sink is configured"
+    );
+    assert!(
+        metrics.observed.lock().expect("observed").is_empty(),
+        "harvest.audit.export_observed is part of the same AC8 contract: an \
+         embedder who never configures a sink must see zero metrics, not \
+         just zero database writes"
     );
 }
 
@@ -834,6 +857,11 @@ async fn export_status_reports_cursor_lag_and_state() {
     assert!(
         !metrics.lag.lock().expect("lag").is_empty(),
         "harvest.audit.export_lag must be emitted every tick"
+    );
+    assert_eq!(
+        *metrics.observed.lock().expect("observed"),
+        vec![(0_u16, true)],
+        "a successful tick reports the shard as observed"
     );
     assert_eq!(
         *metrics.exported.lock().expect("exported"),
@@ -1589,6 +1617,12 @@ async fn the_exported_counter_is_not_bumped_when_delivery_fails() {
         !metrics.lag.lock().expect("lag").is_empty(),
         "the lag gauge must still be emitted on a tick that delivered nothing"
     );
+    assert_eq!(
+        *metrics.observed.lock().expect("observed"),
+        vec![(0_u16, true)],
+        "a sink rejecting the batch is not the same as the exporter being \
+         unable to observe the shard: the cursor and lag were read fine"
+    );
 }
 
 #[tokio::test]
@@ -1614,6 +1648,249 @@ async fn an_idle_tick_never_calls_the_sink_but_still_emits_lag() {
         vec![(0_u16, 0.0)],
         "the gauge is emitted with 0 rather than going stale"
     );
+    assert_eq!(
+        *metrics.observed.lock().expect("observed"),
+        vec![(0_u16, true)],
+        "an idle tick still observed the shard fine, so the availability \
+         gauge reports true alongside the lag gauge"
+    );
+}
+
+// Issue #1268: a shard the scanner cannot acquire a connection for must not
+// leave `harvest.audit.export_lag` as the only signal. Before this fix, the
+// sharded loop `continue`d past an unreachable shard without touching either
+// gauge. The lag gauge then kept serving a stale, commonly caught-up value
+// forever, and no alert could tell "healthy" apart from "unobservable".
+#[tokio::test]
+async fn a_shard_the_scanner_cannot_acquire_a_connection_for_is_marked_unobserved() {
+    let _guard = TEST_SERIAL.lock().await;
+    let _installed = install(Arc::new(RecordingSink::new(200)), 100);
+    let (mut conn, container) = make_conn().await;
+
+    // The sharded pool only maps shard 0; shard 7 is assigned but has no
+    // pool, the shape `sp.exact_pool_for` reports for an unreachable shard.
+    let pool = single_connection_pool(&container).await;
+    let sharded = autumn_harvest::shard::ShardedDbPool::single(pool);
+
+    let metrics = RecordingMetrics::default();
+    let _ = fire_due_audit_exports(
+        &mut conn,
+        &Some(sharded),
+        &[autumn_harvest::types::ShardId::new(7)],
+        &metrics,
+    )
+    .await;
+    uninstall();
+
+    assert_eq!(
+        *metrics.observed.lock().expect("observed"),
+        vec![(7_u16, false)],
+        "an unreachable shard must be reported unobserved, loudly, rather \
+         than silently skipped"
+    );
+    assert!(
+        metrics.lag.lock().expect("lag").is_empty(),
+        "the lag gauge must not be given a fabricated reading for a shard \
+         that was never actually queried"
+    );
+}
+
+// The sibling of the test above. That one covers a shard with no pool at
+// all. This one covers a shard that IS mapped to a pool, but whose database
+// has gone away. Both must be marked unobserved, through the two different
+// arms of the connection-acquire match. Stopping the container gives an
+// immediate connection refusal, so this exercises the `Ok(Err(e))` arm
+// without waiting out `SHARD_ACQUIRE_BOUND`'s five-second timeout.
+#[tokio::test]
+async fn a_shard_whose_database_is_unreachable_is_marked_unobserved() {
+    let _guard = TEST_SERIAL.lock().await;
+    let _installed = install(Arc::new(RecordingSink::new(200)), 100);
+    let (mut conn, container) = make_conn().await;
+
+    let pool = single_connection_pool(&container).await;
+    container
+        .stop_with_timeout(Some(0))
+        .await
+        .expect("stop container");
+
+    let sharded = autumn_harvest::shard::ShardedDbPool::single(pool);
+    let metrics = RecordingMetrics::default();
+    let _ = fire_due_audit_exports(
+        &mut conn,
+        &Some(sharded),
+        &[autumn_harvest::types::ShardId::new(0)],
+        &metrics,
+    )
+    .await;
+    uninstall();
+
+    assert_eq!(
+        *metrics.observed.lock().expect("observed"),
+        vec![(0_u16, false)],
+        "a connection error acquiring a mapped shard's pool must be \
+         reported unobserved, exactly like a shard with no pool at all"
+    );
+    assert!(
+        metrics.lag.lock().expect("lag").is_empty(),
+        "the lag gauge must not be given a fabricated reading for a shard \
+         the exporter could never connect to"
+    );
+}
+
+// Codex review on PR #1505: the two tests above cover a failure INSIDE
+// `fire_due_audit_exports`'s own per-shard loop. But `enforce_timeouts_once`
+// -- and therefore `fire_due_audit_exports` -- is only reached after the
+// timeout checker's OWN, earlier connection acquisition succeeds. If a
+// shard's database is unreachable even for that first checkout, the inner
+// mechanism never runs at all this tick.
+// `spawn_timeout_checker_for_shard` must mark the shard unobserved itself.
+#[tokio::test]
+async fn a_checkers_own_connection_failure_marks_its_shard_unobserved() {
+    let _guard = TEST_SERIAL.lock().await;
+    let _installed = install(Arc::new(RecordingSink::new(200)), 100);
+
+    let (_conn, container) = make_conn().await;
+    let pool = single_connection_pool(&container).await;
+    container
+        .stop_with_timeout(Some(0))
+        .await
+        .expect("stop container");
+
+    let metrics = Arc::new(RecordingMetrics::default());
+    let telemetry = Arc::new(autumn_harvest::telemetry::TelemetryConfig {
+        metrics: metrics.clone(),
+        ..Default::default()
+    });
+    let cancel = tokio_util::sync::CancellationToken::new();
+
+    let handle = autumn_harvest::timeout::spawn_timeout_checker_for_shard(
+        pool,
+        cancel.clone(),
+        std::time::Duration::from_millis(50),
+        telemetry,
+        std::time::Duration::from_secs(5),
+        None,
+        vec![autumn_harvest::types::ShardId::new(0)],
+        Arc::new(autumn_harvest::circuit_breaker::CircuitBreakerRegistry::default()),
+        None,
+        60,
+        Some(autumn_harvest::types::ShardId::new(0)),
+        autumn_harvest::payload_codec::PayloadCodecs::default(),
+        0,
+    );
+
+    // Poll (bounded) rather than sleeping a fixed span: fast when the fix
+    // works, a clear timeout rather than a flake when it does not.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if metrics
+            .observed
+            .lock()
+            .expect("observed")
+            .contains(&(0_u16, false))
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the checker must mark its own shard unobserved when it cannot even \
+             acquire its own connection; got {:?}",
+            metrics.observed.lock().expect("observed")
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(
+        metrics.lag.lock().expect("lag").is_empty(),
+        "the lag gauge must not be given a fabricated reading for a shard \
+         whose checker could never even acquire a connection"
+    );
+
+    cancel.cancel();
+    let _ = handle.await;
+    uninstall();
+}
+
+// Issue #1268: the legacy `spawn_timeout_checker` entry point passes
+// `shard: None` for a process-wide loop. That loop can still cover a real,
+// non-default `shard_assignments` (e.g. `[7]`) when driving a sharded pool.
+// The fix above must label the shards `shard_assignments` actually names.
+// It must never fall back to the pool's own default shard. Otherwise a
+// connection failure here would mark the WRONG shard (0) unobserved, while
+// the actually-affected shard (7) stays frozen.
+#[tokio::test]
+async fn a_process_wide_checkers_connection_failure_marks_its_real_shards_unobserved() {
+    let _guard = TEST_SERIAL.lock().await;
+    let _installed = install(Arc::new(RecordingSink::new(200)), 100);
+
+    let (_conn, container) = make_conn().await;
+    let pool = single_connection_pool(&container).await;
+    // `ShardedDbPool::single` always defaults to shard 0. That is exactly
+    // the wrong-shard label a naive fix would fall back to, so the
+    // assignment below names a different shard on purpose. Built before
+    // the container stops: `get_host_port_ipv4` needs the live mapping.
+    let sharded =
+        autumn_harvest::shard::ShardedDbPool::single(single_connection_pool(&container).await);
+    container
+        .stop_with_timeout(Some(0))
+        .await
+        .expect("stop container");
+
+    let metrics = Arc::new(RecordingMetrics::default());
+    let telemetry = Arc::new(autumn_harvest::telemetry::TelemetryConfig {
+        metrics: metrics.clone(),
+        ..Default::default()
+    });
+    let cancel = tokio_util::sync::CancellationToken::new();
+
+    let handle = autumn_harvest::timeout::spawn_timeout_checker_for_shard(
+        pool,
+        cancel.clone(),
+        std::time::Duration::from_millis(50),
+        telemetry,
+        std::time::Duration::from_secs(5),
+        Some(sharded),
+        vec![autumn_harvest::types::ShardId::new(7)],
+        Arc::new(autumn_harvest::circuit_breaker::CircuitBreakerRegistry::default()),
+        None,
+        60,
+        None, // the legacy, process-wide entry point's own shard label
+        autumn_harvest::payload_codec::PayloadCodecs::default(),
+        0,
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if metrics
+            .observed
+            .lock()
+            .expect("observed")
+            .contains(&(7_u16, false))
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the checker must mark shard 7 -- the shard `shard_assignments` \
+             actually names -- unobserved, never the pool's own default \
+             shard 0; got {:?}",
+            metrics.observed.lock().expect("observed")
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(
+        !metrics
+            .observed
+            .lock()
+            .expect("observed")
+            .contains(&(0_u16, false)),
+        "shard 0 was never assigned to this loop and must not be reported \
+         at all; got {:?}",
+        metrics.observed.lock().expect("observed")
+    );
+
+    cancel.cancel();
+    let _ = handle.await;
+    uninstall();
 }
 
 // A mismatched (conn, shard_assignments) pair must never stamp rows in the
