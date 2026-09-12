@@ -28673,9 +28673,16 @@ pub async fn reset_timed_out_workflow_task(pool: &DbPool, task_id: uuid::Uuid, w
     // Retry acquiring a pool connection: a transient pool saturation during
     // timeout handling would otherwise leave the task stuck in RUNNING on a
     // live worker (the orphan reclaimer skips tasks owned by live workers).
+    //
+    // Issue #1459 traced a real stuck row to this exact budget. The earlier
+    // four-attempt, 2.7-second schedule exhausted during a CI-runner
+    // contention burst that cleared a few seconds later. Eight attempts
+    // over about sixteen seconds give a transient burst far longer to
+    // clear. This path still gives up and logs the row as stuck if that
+    // budget runs out.
     let mut conn = {
         let mut last_err = None;
-        let backoff_ms: &[u64] = &[0, 200, 500, 2_000];
+        let backoff_ms: &[u64] = &[0, 100, 250, 500, 1_000, 2_000, 4_000, 8_000];
         let mut result = None;
         for &delay_ms in backoff_ms {
             if delay_ms > 0 {
