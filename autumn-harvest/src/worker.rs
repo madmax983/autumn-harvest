@@ -4045,6 +4045,34 @@ const fn effective_workflow_task_timeout(configured: Duration, local_cap: Durati
     }
 }
 
+/// The poison-pill reclaimer's stuck-running backstop threshold (issue
+/// #1459), in seconds, derived from the effective workflow-task budget.
+///
+/// The engine hard-cancels a workflow-task dispatch once it exceeds
+/// `effective_workflow_task_timeout` (`run_under_workflow_body_budget`). So a
+/// `workflow` row still `RUNNING` past that budget already stopped
+/// processing. The only question is whether its reset call
+/// (`reset_timed_out_workflow_task`) landed. That reset retries a bounded
+/// ~2.7 seconds of pool-connection backoff before giving up.
+///
+/// Four times the budget plus a flat 30-second margin is generous headroom
+/// past both. It is wide enough that a merely slow, not stuck, decision
+/// cycle is never caught by it. The engine's own cancellation already
+/// bounds a cycle to one budget's length.
+///
+/// `None` when `workflow_task_timeout` is disabled (`Duration::ZERO`).
+/// There is then no per-cycle budget to compare against. The backstop stays
+/// off, and only the existing dead-worker reclaim path applies.
+fn stuck_running_threshold_secs(effective_workflow_task_timeout: Duration) -> Option<i64> {
+    if effective_workflow_task_timeout.is_zero() {
+        return None;
+    }
+    let margin = effective_workflow_task_timeout
+        .saturating_mul(4)
+        .saturating_add(Duration::from_secs(30));
+    Some(i64::try_from(margin.as_secs()).unwrap_or(i64::MAX))
+}
+
 /// The deadline a **local** activity attempt reports via
 /// [`ActivityContext::deadline`] (issue #783).
 ///
@@ -26230,6 +26258,15 @@ impl Worker {
         // computation lives in one place.
         let worker_stale_secs = worker_stale_secs(self.config.worker_heartbeat_interval);
 
+        // Issue #1459: the poison-pill reclaimer's stuck-running backstop
+        // threshold, derived from this worker's own effective workflow-task
+        // budget (the same value `dispatch_task` enforces via
+        // `run_under_workflow_body_budget`).
+        let stuck_running_secs = stuck_running_threshold_secs(effective_workflow_task_timeout(
+            self.config.workflow_task_timeout,
+            self.config.max_local_activity_start_to_close,
+        ));
+
         // One timeout checker per assigned shard. `enforce_timeouts_once` scans
         // the connection's *own* database (find_timed_out_tasks, external-task
         // timeouts, workflow-execution deadlines, SLA breaches, history
@@ -26273,6 +26310,7 @@ impl Worker {
                     self.config.worker_heartbeat_interval,
                     self.config.poison_pill_threshold,
                     worker_stale_secs,
+                    stuck_running_secs,
                     self.registry.telemetry().clone(),
                     *shard,
                     self.registry.payload_codecs().clone(),
@@ -30308,6 +30346,42 @@ mod tests {
                 Duration::from_millis(500)
             ),
             Duration::from_millis(1500)
+        );
+    }
+
+    /// Issue #1459: the poison-pill stuck-running backstop threshold must
+    /// leave generous headroom past the engine's own hard cancellation of a
+    /// decision cycle. A merely slow, not stuck, cycle must never be caught.
+    #[test]
+    fn stuck_running_threshold_gives_headroom_past_the_task_budget() {
+        let budget = Duration::from_secs(60);
+        let threshold = stuck_running_threshold_secs(budget).expect("budget is nonzero");
+        let budget_secs = i64::try_from(budget.as_secs()).expect("test budget fits in i64");
+        assert!(
+            threshold > budget_secs,
+            "the threshold must exceed the budget a cycle can legitimately run for"
+        );
+        // Four times the budget plus the documented 30-second margin.
+        assert_eq!(threshold, 60 * 4 + 30);
+    }
+
+    #[test]
+    fn stuck_running_threshold_is_disabled_when_the_budget_is_zero() {
+        assert_eq!(
+            stuck_running_threshold_secs(Duration::ZERO),
+            None,
+            "no per-cycle budget to compare against means the backstop stays off"
+        );
+    }
+
+    #[test]
+    fn stuck_running_threshold_never_overflows_on_an_extreme_budget() {
+        let threshold = stuck_running_threshold_secs(Duration::from_secs(u64::MAX / 2))
+            .expect("nonzero budget");
+        assert_eq!(
+            threshold,
+            i64::MAX,
+            "saturating arithmetic clamps rather than panicking or wrapping"
         );
     }
 
