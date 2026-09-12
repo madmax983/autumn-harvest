@@ -28821,6 +28821,24 @@ pub async fn quarantine_workflow_task_timeout(
     }
 }
 
+/// Backoff schedule for [`reset_timed_out_workflow_task`]'s pool-connection
+/// retries (issue #1459).
+///
+/// Ten attempts, sleeping 0ms then rising to an 8s cap, sum to about 32
+/// seconds of budget. The previous four-attempt, 2.7-second budget could
+/// exhaust under real contention. A 2026-09-09 CI-health investigation
+/// reproduced this. A controlled experiment pinned four concurrent copies
+/// to two CPUs. It hit the exhausted-budget signature in five of twelve
+/// runs. The orphan reclaimer only rescues a task owned by a dead worker.
+/// A row wedged here on a still-live worker had no other backstop.
+///
+/// The retry only delays reclaiming one already-timed-out row. The caller
+/// drops the dispatch concurrency permit before this call runs, so a
+/// longer retry window here never blocks another task from being
+/// dispatched.
+const RESET_POOL_RETRY_BACKOFF_MS: &[u64] =
+    &[0, 100, 250, 500, 1_000, 2_000, 4_000, 8_000, 8_000, 8_000];
+
 /// Reset a timed-out RUNNING workflow task back to PENDING so any worker can
 /// re-claim it on the next poll cycle without waiting for the orphan-reclaim
 /// staleness window (issue #494).
@@ -28836,7 +28854,7 @@ pub async fn reset_timed_out_workflow_task(pool: &DbPool, task_id: uuid::Uuid, w
     // live worker (the orphan reclaimer skips tasks owned by live workers).
     let mut conn = {
         let mut last_err = None;
-        let backoff_ms: &[u64] = &[0, 200, 500, 2_000];
+        let backoff_ms: &[u64] = RESET_POOL_RETRY_BACKOFF_MS;
         let mut result = None;
         for &delay_ms in backoff_ms {
             if delay_ms > 0 {
