@@ -4987,6 +4987,13 @@ async fn wait_for_completion_with_diagnostics(
 /// diagnosis and reproduction steps. This is a product-level gap, not a
 /// test-tolerance problem. The bound below is not widened again for this
 /// cause.
+///
+/// **2026-09-12 fix:** `reset_timed_out_workflow_task`'s pool-retry budget
+/// widened from four attempts over 2.7 seconds to eight attempts over
+/// about sixteen seconds. A CI-runner contention burst now has far longer
+/// to clear before this path gives up on the row. The gap itself -- no
+/// backstop once the budget is genuinely exhausted -- is still open; see
+/// issue #1459.
 #[tokio::test(flavor = "multi_thread", worker_threads = 12)]
 async fn worker_completes_ten_child_fan_out_within_wall_clock_bound() {
     let (database_url, _container) = setup_test_database_url().await;
