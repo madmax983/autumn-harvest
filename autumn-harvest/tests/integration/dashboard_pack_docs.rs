@@ -89,6 +89,7 @@ const DASHBOARD_PROMETHEUS_SERIES: &[&str] = &[
     "harvest_workflow_start_throttled_total",
     "harvest_concurrency_superseded_total",
     "harvest_concurrency_residual_over_limit_total",
+    "harvest_quota_supersede_credit_not_shed_total",
     "harvest_scanner_tick_total",
     "harvest_saga_compensated_total",
     "harvest_saga_compensation_failed_total",
@@ -198,6 +199,8 @@ const DASHBOARD_PROMETHEUS_SERIES: &[&str] = &[
     "harvest_shard_generation",
     // Issue #953 — audit export to a SIEM sink (gauge, bare).
     "harvest_audit_export_lag",
+    // Issue #1268 — the availability companion to the lag gauge (gauge, bare).
+    "harvest_audit_export_observed",
     "harvest_shard_fenced_total",
     // Audit export to a SIEM sink (issue #953).
     "harvest_audit_exported_total",
@@ -264,6 +267,10 @@ const SERIES_LABELS: &[(&str, &[&str])] = &[
         "harvest_concurrency_residual_over_limit",
         &["workflow", "gap"],
     ),
+    (
+        "harvest_quota_supersede_credit_not_shed",
+        &["workflow", "gap"],
+    ),
     ("harvest_workflow_history_oversized", &["workflow"]),
     ("harvest_workflow_active", &["workflow", "state"]),
     ("harvest_saga_compensated", &["workflow", "queue"]),
@@ -321,6 +328,7 @@ const SERIES_LABELS: &[(&str, &[&str])] = &[
     // `actor`/`operation`/`target_id` are unbounded and tenant-identifying,
     // so they are deliberately never labels (ADR-0001 §7).
     ("harvest_audit_export_lag", &["shard"]),
+    ("harvest_audit_export_observed", &["shard"]),
     ("harvest_audit_exported", &["shard"]),
     ("harvest_replication_lag_bytes", &["shard"]),
     ("harvest_replication_standbys", &["shard"]),
