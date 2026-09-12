@@ -719,6 +719,22 @@ role. A `role=`-only fix would patch one narrow trigger of that same
 gap while leaving its more common trigger untouched, an inconsistent
 partial fix. Not fixed; replied explaining why.
 
+A twenty-seventh review round (P1) found that `PostgreSQL` silently
+truncates an identifier longer than `NAMEDATALEN` minus one (63 bytes)
+when storing it -- `SplitIdentifierString` truncates each `search_path`
+entry the same way -- but the parsed-list normalization kept the full,
+untruncated name. Two names sharing their first 63 bytes therefore
+store as the identical name server-side, yet compared as distinct
+values here, the same dangerous under-merging direction as every other
+finding in this stretch. `parse_identifier_list` now truncates every
+parsed name to this limit through `truncate_postgres_identifier`,
+cutting at the last full character rather than splitting a multi-byte
+one. This is applied to both quoted and unquoted names -- broader than
+the finding's own "unquoted identifiers" framing, since `NAMEDATALEN`
+is a storage-level limit independent of quoting.
+`from_dsns_groups_unquoted_names_differing_only_past_the_identifier_length_limit`
+pins the fix.
+
 **Zero migration, zero engine impact beyond the new parameter.** No new
 `WorkflowEvent` variant, no schema change, no change to any existing call
 site's behavior when the new flag is left at its default (disabled).

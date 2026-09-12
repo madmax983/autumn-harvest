@@ -388,8 +388,13 @@ shard records:
   literal quote. `tenant,public` and `tenant, public` compare equal, and
   `PUBLIC` collapses with `public`, but a quoted `"tenant, one"` (one
   schema) never collapses with the two unquoted schemas `tenant` and
-  `one`. A value that does not fit this grammar is compared unparsed,
-  the conservative fallback. Each parsed name is escaped before the
+  `one`. Each parsed name, quoted or not, is then truncated to
+  Postgres's identifier length limit (`NAMEDATALEN` minus one, 63
+  bytes), matching what `SplitIdentifierString` itself does — two
+  names sharing their first 63 bytes store as the identical name and
+  must key the same. A value that does not fit this grammar is
+  compared unparsed, the conservative fallback. Each parsed name is
+  escaped before the
   names are rejoined into the key, quoting its own backslashes and
   commas: joining with a bare comma would let a quoted name's own
   embedded comma read back as a name boundary, so the one name

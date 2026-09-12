@@ -1316,13 +1316,39 @@ fn escape_identifier_list_item(item: &str) -> String {
     escaped
 }
 
+/// The longest identifier `PostgreSQL` stores without truncating it
+/// (issue #1266). `NAMEDATALEN` is 64, and one byte is reserved for
+/// the terminator. A name longer than this is silently truncated to
+/// it. `SplitIdentifierString` truncates each `search_path` entry the
+/// same way. Two names differing only after this many bytes truncate
+/// to the identical stored name and must key the same.
+#[cfg(feature = "db")]
+const POSTGRES_MAX_IDENTIFIER_LEN: usize = 63;
+
+/// Truncates `name` to `PostgreSQL`'s identifier length limit (issue
+/// #1266). This cuts at the last full character rather than splitting
+/// a multi-byte one, matching `PostgreSQL`'s own byte-based truncation.
+#[cfg(feature = "db")]
+fn truncate_postgres_identifier(name: &str) -> &str {
+    if name.len() <= POSTGRES_MAX_IDENTIFIER_LEN {
+        return name;
+    }
+    let mut end = POSTGRES_MAX_IDENTIFIER_LEN;
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    &name[..end]
+}
+
 /// Parses a comma-separated identifier list the way `PostgreSQL`'s own
 /// `SplitIdentifierString` does (issue #1266), used for `search_path`
 /// and similar GUCs. Whitespace around an item is not significant. An
 /// unquoted item is folded to lowercase, matching `PostgreSQL`'s own
 /// folding of an unquoted identifier. A double-quoted item keeps its
 /// case verbatim, including any comma or whitespace it encloses; `""`
-/// inside one is a literal quote character. Returns `None` on anything
+/// inside one is a literal quote character. Either form is then
+/// truncated to `PostgreSQL`'s identifier length limit, matching what
+/// `SplitIdentifierString` itself does. Returns `None` on anything
 /// that does not fit this grammar, rather than guessing at a malformed
 /// value. An unterminated quote is one such case. Content trailing a
 /// closing quote before the next comma is another.
@@ -1348,7 +1374,7 @@ fn parse_identifier_list(value: &str) -> Option<Vec<String>> {
                         Some(c) => ident.push(c),
                     }
                 }
-                items.push(ident);
+                items.push(truncate_postgres_identifier(&ident).to_string());
             }
             Some(_) => {
                 let mut ident = String::new();
@@ -1359,7 +1385,8 @@ fn parse_identifier_list(value: &str) -> Option<Vec<String>> {
                     ident.push(c);
                     chars.next();
                 }
-                items.push(ident.to_lowercase());
+                let folded = ident.to_lowercase();
+                items.push(truncate_postgres_identifier(&folded).to_string());
             }
         }
         while chars.next_if(|c| c.is_whitespace()).is_some() {}
@@ -2834,6 +2861,38 @@ mod tests {
             "PostgreSQL normalizes a hyphen to an underscore in a \
              long-form GUC name, so --search-path= and --search_path= \
              select the same schema and must collapse"
+        );
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_groups_unquoted_names_differing_only_past_the_identifier_length_limit() {
+        let prefix = "a".repeat(63);
+        let name_a = format!("{prefix}x");
+        let name_b = format!("{prefix}y");
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    format!("postgres://db.example/shared?options=-c%20search_path%3D{name_a}"),
+                ),
+                (
+                    ShardId::new(1),
+                    format!("postgres://db.example/shared?options=-c%20search_path%3D{name_b}"),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "PostgreSQL silently truncates an unquoted identifier past \
+             its 63-byte limit, so two names sharing that many bytes \
+             store as the identical name and must collapse"
         );
     }
 
