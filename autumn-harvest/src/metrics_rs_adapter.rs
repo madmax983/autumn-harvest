@@ -391,6 +391,14 @@ impl MetricsRecorder for MetricsRsRecorder {
         .set(seconds);
     }
 
+    fn record_audit_export_observed(&self, shard: u16, observed: bool) {
+        gauge!(
+            crate::telemetry::METRIC_AUDIT_EXPORT_OBSERVED,
+            METRIC_LABEL_SHARD => shard.to_string(),
+        )
+        .set(if observed { 1.0 } else { 0.0 });
+    }
+
     fn record_audit_exported(&self, shard: u16, count: u64) {
         counter!(
             crate::telemetry::METRIC_AUDIT_EXPORTED,

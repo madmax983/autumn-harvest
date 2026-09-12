@@ -410,6 +410,25 @@ pub const METRIC_SHARD_GENERATION: &str = "harvest.shard.generation";
 /// are unbounded, user-supplied, and tenant-identifying.
 pub const METRIC_AUDIT_EXPORT_LAG: &str = "harvest.audit.export_lag";
 
+/// Gauge: `1` when the exporter observed a shard's cursor and lag this tick,
+/// `0` when it could not (issue #1268).
+///
+/// A Prometheus gauge keeps its last value. Without this signal, a shard the
+/// exporter cannot observe freezes [`METRIC_AUDIT_EXPORT_LAG`] at its last
+/// reading, commonly `0`. The threshold alert then stays silent, and
+/// `absent()` never fires, because the series still exists.
+///
+/// Covers a connection the scanner cannot acquire, a failed cursor read, and
+/// a failed lag query. It does not cover a shard missing from
+/// `shard_assignments` altogether, since no code path ever runs for it.
+/// Template a per-shard `absent()` rule from your own inventory for that
+/// case.
+///
+/// Emitted on every exporter tick that reaches a shard, delivery outcome
+/// aside. Labelled `{shard}` only, for the same cardinality reason as
+/// [`METRIC_AUDIT_EXPORT_LAG`].
+pub const METRIC_AUDIT_EXPORT_OBSERVED: &str = "harvest.audit.export_observed";
+
 /// Counter: audit records acknowledged by the sink for a shard (issue #953).
 ///
 /// Incremented by the batch size only after the cursor has actually advanced,
@@ -2797,6 +2816,20 @@ pub trait MetricsRecorder: Send + Sync {
     /// Maps to the gauge [`METRIC_AUDIT_EXPORT_LAG`].
     fn record_audit_export_lag(&self, shard: u16, seconds: f64) {
         let _ = (shard, seconds);
+    }
+
+    /// The exporter did, or did not, observe a shard's cursor and lag this
+    /// tick (issue #1268).
+    ///
+    /// Call this on **every** exporter tick that reaches a shard, whether or
+    /// not it delivers a batch. `true` when the cursor read and the lag query
+    /// both succeeded; `false` on a connection failure, a cursor read
+    /// failure, or a lag query failure. See [`METRIC_AUDIT_EXPORT_OBSERVED`]
+    /// for why this signal exists.
+    ///
+    /// Maps to the gauge [`METRIC_AUDIT_EXPORT_OBSERVED`].
+    fn record_audit_export_observed(&self, shard: u16, observed: bool) {
+        let _ = (shard, observed);
     }
 
     /// Audit records the sink acknowledged for a shard (issue #953).

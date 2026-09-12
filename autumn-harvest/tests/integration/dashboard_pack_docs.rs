@@ -198,6 +198,8 @@ const DASHBOARD_PROMETHEUS_SERIES: &[&str] = &[
     "harvest_shard_generation",
     // Issue #953 — audit export to a SIEM sink (gauge, bare).
     "harvest_audit_export_lag",
+    // Issue #1268 — the availability companion to the lag gauge (gauge, bare).
+    "harvest_audit_export_observed",
     "harvest_shard_fenced_total",
     // Audit export to a SIEM sink (issue #953).
     "harvest_audit_exported_total",
@@ -321,6 +323,7 @@ const SERIES_LABELS: &[(&str, &[&str])] = &[
     // `actor`/`operation`/`target_id` are unbounded and tenant-identifying,
     // so they are deliberately never labels (ADR-0001 §7).
     ("harvest_audit_export_lag", &["shard"]),
+    ("harvest_audit_export_observed", &["shard"]),
     ("harvest_audit_exported", &["shard"]),
     ("harvest_replication_lag_bytes", &["shard"]),
     ("harvest_replication_standbys", &["shard"]),
