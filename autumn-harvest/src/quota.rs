@@ -565,6 +565,82 @@ pub async fn load_quota_usage(
     })
 }
 
+/// SQL for [`load_quota_usage_excluding`]. Identical to [`QUOTA_USAGE_SQL`]
+/// except the `active` CTE also excludes `$3`, an array of execution ids.
+///
+/// A separate query text, not a wrapper around [`QUOTA_USAGE_SQL`]. Every
+/// OTHER caller still uses the unqualified admission-time read, unchanged.
+/// It keeps the exact query shape `docs/performance-quota-history-bytes.md`
+/// measured.
+#[cfg(feature = "db")]
+const QUOTA_USAGE_EXCLUDING_SQL: &str = "\
+    WITH active AS ( \
+        SELECT id FROM harvest_workflow_executions \
+        WHERE workflow_name = $1 AND quota_key = $2 AND state IN ('RUNNING', 'PAUSED') \
+          AND id <> ALL($3) \
+    ) \
+    SELECT \
+        (SELECT COUNT(*) FROM active)::BIGINT AS active_executions, \
+        COALESCE( \
+            (SELECT SUM(pg_column_size(e.event_data)) \
+             FROM harvest_events e \
+             WHERE e.workflow_exec_id IN (SELECT id FROM active)), \
+            0 \
+        )::BIGINT AS history_bytes, \
+        (SELECT COUNT(*) FROM harvest_dead_letters \
+         WHERE workflow_name = $1 AND quota_key = $2)::BIGINT AS dead_letters";
+
+/// Load current usage for one `(workflow_name, quota_key)` pair, excluding
+/// specific executions entirely from the `active_executions`/`history_bytes`
+/// counters (issue #1228 review).
+///
+/// An admission can plan to shed some incumbents. Or it can have just
+/// inserted its own row. Either way it needs usage as it will read once
+/// those executions are gone, or once its own row's history is set aside.
+/// Neither is usage as it stands right now. [`load_quota_usage`] followed
+/// by a separate subtraction computed the excluded executions'
+/// contribution from an EARLIER, separate read. A row could change state
+/// between that earlier read and this one. An incumbent could complete on
+/// its own. Or the caller's own row could pick up a `WorkflowStarted`
+/// event. Either change made the subtraction stale. Excluding the ids
+/// directly inside this ONE query removes the gap. There is no earlier
+/// read to go stale relative to, because there is no earlier read.
+///
+/// `excluded_ids` is typically the caller's own `self_exec_id`. That row
+/// is already `RUNNING`, so it always needs excluding: it would otherwise
+/// double-count itself against the very cap it is being checked against.
+/// On the `cancel_running` dry-run path, `excluded_ids` also holds the
+/// executions a pending supersede pass is about to shed. A row that
+/// starts existing, or newly matches the key, only AFTER this query runs
+/// is not excluded, and could not be. That case can only raise the
+/// reported usage, never lower it below the true value. It is the safe
+/// direction the rest of this mechanism already relies on.
+///
+/// # Errors
+///
+/// Returns [`crate::error::HarvestError::Database`] on query failure.
+#[cfg(feature = "db")]
+pub async fn load_quota_usage_excluding(
+    conn: &mut AsyncPgConnection,
+    workflow_name: &str,
+    quota_key: &str,
+    excluded_ids: &[uuid::Uuid],
+) -> HarvestResult<QuotaUsage> {
+    let row: QuotaUsageRow = diesel::sql_query(QUOTA_USAGE_EXCLUDING_SQL)
+        .bind::<Text, _>(workflow_name)
+        .bind::<Text, _>(quota_key)
+        .bind::<diesel::sql_types::Array<diesel::sql_types::Uuid>, _>(excluded_ids)
+        .get_result(conn)
+        .await
+        .map_err(database_error)?;
+
+    Ok(QuotaUsage {
+        active_executions: row.active_executions,
+        history_bytes: row.history_bytes,
+        dead_letters: row.dead_letters,
+    })
+}
+
 /// One `(workflow_name, quota_key)` pair's current usage, for the operator
 /// read model (`GET /admin/quotas`, issue #946 AC5).
 #[cfg(feature = "db")]

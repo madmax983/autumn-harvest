@@ -904,6 +904,33 @@ pub const METRIC_CONCURRENCY_SUPERSEDED: &str = "harvest.concurrency.superseded"
 /// is never a label (ADR-0001 §7). `execution.id` must never appear here.
 pub const METRIC_CONCURRENCY_RESIDUAL_OVER_LIMIT: &str = "harvest.concurrency.residual_over_limit";
 
+/// Counter: a `cancel_running` admission's quota credit assumed a run would
+/// be shed, and the real supersede pass skipped it instead (issue #1228
+/// review, P2).
+///
+/// `crate::concurrency::dry_run_supersede_credit` credits an admission for
+/// the exact runs it expects `supersede_inner` to cancel a moment later.
+/// `supersede_inner` can skip one of those runs on an unexpected error and
+/// leave it running instead. A candidate's own corrupted
+/// `parent_close_policy` is one cause. A `Config` error from its terminal
+/// chokepoint, that is not the benign already-terminal race, is another.
+/// Either way, one corrupt neighbor must never wedge every future
+/// admission for the key. The admission already committed on the
+/// assumption that run was gone. So the key is now genuinely over its
+/// declared cap, not merely transiently the way
+/// [`METRIC_CONCURRENCY_RESIDUAL_OVER_LIMIT`] describes. There is no way
+/// to retract that admission by the time this is detected. Its
+/// `WorkflowStarted` event is already durable. So this counter is the
+/// alertable signal, not a rejection.
+///
+/// Incremented once per admission whose real supersede pass left at least
+/// one credited run unshed, with the count of unshed runs as its value.
+///
+/// Labeled by `workflow` (workflow type name) only, matching
+/// [`METRIC_CONCURRENCY_RESIDUAL_OVER_LIMIT`]'s cardinality rule — neither
+/// the quota key nor `execution.id` is ever a label (ADR-0001 §7).
+pub const METRIC_QUOTA_SUPERSEDE_CREDIT_NOT_SHED: &str = "harvest.quota.supersede_credit_not_shed";
+
 /// Counter: incremented exactly once per real saga compensation sequence
 /// (issue #801).
 ///
@@ -2631,6 +2658,21 @@ pub trait MetricsRecorder: Send + Sync {
         let _ = (workflow, gap);
     }
 
+    /// A `cancel_running` admission's quota credit assumed `gap` runs would
+    /// be shed, and the real supersede pass skipped them instead (issue
+    /// #1228 review, P2).
+    ///
+    /// Maps to the counter [`METRIC_QUOTA_SUPERSEDE_CREDIT_NOT_SHED`].
+    /// Unlike [`Self::record_concurrency_residual_over_limit`], the key
+    /// here is not merely transient. The admission that spent this credit
+    /// is already committed. So the key is genuinely over its declared cap
+    /// until an operator intervenes or the corrupt candidate is fixed.
+    /// Additive with a no-op default: implementing it is optional and no
+    /// existing implementor breaks.
+    fn record_quota_supersede_credit_not_shed(&self, workflow: &str, gap: u64) {
+        let _ = (workflow, gap);
+    }
+
     /// Record the current available tokens for a rate limit bucket key.
     ///
     /// Maps to the gauge `harvest.rate_limit.tokens_available{key}`.
@@ -3576,6 +3618,35 @@ pub fn emit_concurrency_residual_over_limit<M: MetricsRecorder + ?Sized>(
         return;
     }
     metrics.record_concurrency_residual_over_limit(workflow_name, gap);
+}
+
+/// Emit [`METRIC_QUOTA_SUPERSEDE_CREDIT_NOT_SHED`] for a skipped credited run.
+///
+/// A `cancel_running` admission's quota credit assumed `gap` runs would be
+/// shed. Its real supersede pass skipped them instead (issue #1228 review,
+/// P2).
+///
+/// Called INLINE from [`crate::execution::run_latest_wins_supersede`],
+/// right after the real supersede pass returns. Same convention as
+/// [`emit_concurrency_residual_over_limit`], and for the same reason: this
+/// is a brand-new counter with no pre-existing post-commit convention to
+/// violate. The condition it reports is itself already a rare edge case,
+/// like a corrupted `parent_close_policy` or an unexpected `Config` error
+/// on one candidate. An occasional phantom sample from a rolled-back
+/// transaction is an accepted, documented simplification, not the gap
+/// this counter exists to close.
+///
+/// Canary probe workflows (issue #796) are excluded, mirroring
+/// [`emit_workflow_terminal`].
+pub fn emit_quota_supersede_credit_not_shed<M: MetricsRecorder + ?Sized>(
+    metrics: &M,
+    workflow_name: &str,
+    gap: u64,
+) {
+    if crate::canary::is_canary_workflow(workflow_name) {
+        return;
+    }
+    metrics.record_quota_supersede_credit_not_shed(workflow_name, gap);
 }
 
 /// Default metrics recorder that discards every sample.
