@@ -453,6 +453,17 @@ fn check_resumable(
         if !task.has_goal || task.max_turns == 0 || !armable {
             return Err(unreadable(&row.exec_id));
         }
+        // A row that says RUNNING in a class this daemon cannot read is a row
+        // it cannot drive. Leaving it out of the driven set stranded the
+        // session in silence. See [`inspect::RunningSession::state_is_damaged`].
+        if row.state_is_damaged {
+            return Err(format!(
+                "session {} says it is running, in a storage class this daemon cannot \
+                 read. The session stays RUNNING and nothing resumes it. Repair the \
+                 row, or remove it.",
+                row.exec_id
+            ));
+        }
         let (recorded_workspace, recorded_model) = (&task.workspace, &task.model);
         // Both restart hints are made to be COPIED, so each value is one
         // shell word and is attached to its flag. A workspace holding a space

@@ -9260,3 +9260,129 @@ fn a_turn_cut_short_at_the_cap_is_not_refused() {
         "the cap must end the session before any tool call is considered"
     );
 }
+
+/// A session that says RUNNING in the wrong storage class is not stranded.
+///
+/// `harvest_executions.state` has TEXT affinity, and a TEXT-affinity column
+/// keeps a stored BLOB as a BLOB. A damaged row can therefore hold the right
+/// bytes in the wrong class, and `state = 'RUNNING'` is false for one of
+/// those.
+///
+/// Measured before the fix: the row was left out of the running set. The
+/// startup seeds the DRIVEN set from that query, so the daemon reported ready
+/// and the session was never driven and never refused.
+#[test]
+fn a_running_session_in_the_wrong_storage_class_is_not_skipped() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let db = dir.path().join("state-class.db");
+    let writer = rusqlite::Connection::open(&db).expect("the database opens");
+    fixture_table(&writer);
+    for (exec, state) in [
+        ("text-run", "'RUNNING'"),
+        ("blob-run", "CAST('RUNNING' AS BLOB)"),
+        // Terminal, and damaged in the same way. It strands no work, so it
+        // must NOT make the daemon refuse to start.
+        ("blob-done", "CAST('COMPLETED' AS BLOB)"),
+    ] {
+        writer
+            .execute(
+                &format!(
+                    "INSERT INTO harvest_executions \
+                     VALUES (?1, ?2, {state}, ?3, NULL, NULL)"
+                ),
+                rusqlite::params![exec, WORKFLOW_NAME, READABLE_TASK],
+            )
+            .expect("the row is recorded");
+    }
+
+    // The same bytes in both live rows, and only the class differs.
+    let class = |exec: &str| -> String {
+        writer
+            .query_row(
+                "SELECT typeof(state) FROM harvest_executions WHERE exec_id = ?1",
+                [exec],
+                |row| row.get(0),
+            )
+            .expect("the class answers")
+    };
+    assert_eq!(class("text-run"), "text", "the readable row is TEXT");
+    assert_eq!(class("blob-run"), "blob", "and the damaged one is a BLOB");
+    drop(writer);
+
+    let reader = inspect::open(&db).expect("the reader opens");
+    let running = inspect::running(&reader, WORKFLOW_NAME).expect("the running rows read");
+    let named: Vec<&str> = running.iter().map(|row| row.exec_id.as_str()).collect();
+    assert!(
+        named.contains(&"blob-run"),
+        "a row whose RUNNING is in the wrong class must still be seen: {named:?}"
+    );
+    assert!(
+        !named.contains(&"blob-done"),
+        "and a terminal row must not be: {named:?}"
+    );
+
+    let damaged = |exec: &str| -> bool {
+        running
+            .iter()
+            .find(|row| row.exec_id == exec)
+            .expect("the session is named")
+            .state_is_damaged
+    };
+    assert!(!damaged("text-run"), "the readable row is not damaged");
+    assert!(damaged("blob-run"), "and the other one is");
+}
+
+/// The daemon refuses to start over a session it cannot drive.
+///
+/// The startup seeds the driven set from the running query. A row it cannot
+/// read is not a row it can skip. The session would stay RUNNING for the life
+/// of the file, and nothing would ever say so.
+#[tokio::test]
+async fn a_daemon_refuses_to_start_over_a_running_row_it_cannot_read() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let workspace = dir.path().join("workspace");
+    std::fs::create_dir_all(&workspace).expect("the workspace is created");
+    let db = dir.path().join("agentd.db");
+    let calls = Arc::new(AtomicUsize::new(0));
+    // The runtime creates the schema the daemon expects.
+    drop(runtime(&db, &workspace, &calls));
+
+    let writer = rusqlite::Connection::open(&db).expect("the database opens");
+    writer
+        .execute(
+            "INSERT INTO harvest_executions              (exec_id, workflow_name, workflow_id, input_json, state)              VALUES (?1, ?2, '', ?3, CAST('RUNNING' AS BLOB))",
+            rusqlite::params![
+                "ffffffff-1111-2222-3333-444444444444",
+                WORKFLOW_NAME,
+                task_on(&workspace, claude::OFFLINE_MODEL).to_string()
+            ],
+        )
+        .expect("the damaged row is recorded");
+    drop(writer);
+
+    // The refusal is BOUNDED. A daemon that does not refuse starts serving and
+    // never returns, so an unbounded await would hang here rather than fail.
+    let message = tokio::time::timeout(
+        Duration::from_secs(30),
+        daemon::serve(daemon::Options {
+            db,
+            socket: dir.path().join("agentd.sock"),
+            workspace,
+            model: claude::DEFAULT_MODEL.to_string(),
+            max_tokens: claude::DEFAULT_MAX_TOKENS,
+            tick: Duration::from_millis(50),
+            api_key: None,
+        }),
+    )
+    .await
+    .expect("a daemon that serves this row would strand the session")
+    .expect_err("the daemon must refuse to start");
+    assert!(
+        message.contains("storage class this daemon cannot read"),
+        "the refusal must say what it found: {message}"
+    );
+    assert!(
+        message.contains("ffffffff-1111-2222-3333-444444444444"),
+        "and which row it found it in: {message}"
+    );
+}

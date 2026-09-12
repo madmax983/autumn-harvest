@@ -39,6 +39,19 @@ pub struct RunningSession {
     pub exec_id: String,
     /// The recorded task. `None` when this daemon cannot read the row.
     pub task: Option<RecordedTask>,
+    /// Does this row say RUNNING in a class this daemon cannot read?
+    ///
+    /// A TEXT-affinity column keeps a stored BLOB as a BLOB, so a damaged row
+    /// can hold the right bytes in the wrong class. `state = 'RUNNING'` is
+    /// false for one of those, and the row was left out of this set. The
+    /// startup seeds the DRIVEN set from here. The session was never driven
+    /// and never refused, so the daemon reported ready over work nothing
+    /// would ever seal.
+    ///
+    /// The row is matched by its BYTES now, and this says which class they
+    /// were in. A state in another class entirely is not matched at all,
+    /// because it claims no live session to strand.
+    pub state_is_damaged: bool,
 }
 
 /// The recorded task of a RUNNING session, cut to what a startup check reads.
@@ -255,9 +268,11 @@ pub fn running(conn: &Connection, workflow_name: &str) -> Result<Vec<RunningSess
         .prepare(
             "SELECT exec_id, \
                     CASE WHEN typeof(input_json) = 'text' \
-                         THEN cast(input_json as blob) END \
+                         THEN cast(input_json as blob) END, \
+                    typeof(state) <> 'text' \
              FROM harvest_executions \
-             WHERE workflow_name = ?1 AND state = 'RUNNING' ORDER BY rowid",
+             WHERE workflow_name = ?1 \
+             AND cast(state as blob) = cast('RUNNING' as blob) ORDER BY rowid",
         )
         .map_err(|e| format!("cannot prepare the running-session query: {e}"))?;
     let rows = statement
@@ -268,6 +283,7 @@ pub fn running(conn: &Connection, workflow_name: &str) -> Result<Vec<RunningSess
                     .get::<_, Option<Vec<u8>>>(1)?
                     .as_deref()
                     .and_then(recorded),
+                state_is_damaged: row.get(2)?,
             })
         })
         .map_err(|e| format!("cannot read the running sessions: {e}"))?;
