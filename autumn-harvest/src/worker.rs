@@ -24098,6 +24098,9 @@ struct WorkerMonitoringHandles {
     timeout_checkers: Vec<tokio::task::JoinHandle<()>>,
     poison_pill_reclaimers: Vec<tokio::task::JoinHandle<()>>,
     pause_auto_resumers: Vec<tokio::task::JoinHandle<()>>,
+    /// Dedicated per-shard audit-export tasks (issue #1269). One per assigned
+    /// shard, mirroring `timeout_checkers`.
+    audit_export_checkers: Vec<tokio::task::JoinHandle<()>>,
     /// Worker-session local-registry reconcilers (issue #606). Empty when
     /// `db` is disabled.
     session_slot_reconcilers: Vec<tokio::task::JoinHandle<()>>,
@@ -25892,6 +25895,11 @@ impl Worker {
                 tracing::warn!(error = %error, "pause auto-resumer failed during shutdown");
             }
         }
+        for handle in monitors.audit_export_checkers {
+            if let Err(error) = handle.await {
+                tracing::warn!(error = %error, "audit-export checker failed during shutdown");
+            }
+        }
         if let Err(error) = monitors.queue_depth_sampler.await {
             tracing::warn!(error = %error, "queue depth sampler failed during shutdown");
         }
@@ -26499,6 +26507,25 @@ impl Worker {
                 )
             })
             .collect();
+        // One dedicated audit-export task per assigned shard (issue #1269).
+        // `enforce_timeouts_once` used to drive `fire_due_audit_exports`
+        // inline on this same cadence. Splitting it out means a slow sink
+        // delays nothing but its own next tick. It also no longer competes
+        // with the timeout checker for a second connection on a
+        // one-connection shard pool.
+        let audit_export_checkers: Vec<_> = shard_pools_for_monitors
+            .iter()
+            .map(|(shard_pool, shard)| {
+                crate::audit_export::spawn_audit_export_checker_for_shard(
+                    shard_pool.clone(),
+                    self.shutdown.clone(),
+                    self.config.poll_interval,
+                    self.registry.telemetry().clone(),
+                    *shard,
+                    self.config.sharded_pool.as_ref(),
+                )
+            })
+            .collect();
         let history_oversized_sampler = spawn_history_oversized_sampler(
             sampler_pools.clone(),
             self.shutdown.clone(),
@@ -26742,6 +26769,7 @@ impl Worker {
             timeout_checkers,
             poison_pill_reclaimers,
             pause_auto_resumers,
+            audit_export_checkers,
             session_slot_reconcilers,
             quota_key_reconcilers,
             history_oversized_sampler,
@@ -27453,6 +27481,15 @@ impl Worker {
                     worker_id = %self.config.worker_id,
                     error = %error,
                     "pause auto-resume scanner failed during shutdown"
+                );
+            }
+        }
+        for handle in monitors.audit_export_checkers {
+            if let Err(error) = handle.await {
+                tracing::warn!(
+                    worker_id = %self.config.worker_id,
+                    error = %error,
+                    "audit-export checker task failed during shutdown"
                 );
             }
         }

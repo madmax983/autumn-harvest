@@ -106,8 +106,8 @@ use crate::types::ShardId;
 ///
 /// # Deliberate deviation from a literal "2 x poll interval" bound
 ///
-/// For the six sub-minute loops this floor, not the `2 x` multiplier, is what
-/// binds: a 500 ms loop is detected in 60 s, **not** 1 s. That is intentional,
+/// For the seven sub-minute loops this floor, not the `2 x` multiplier, is
+/// what binds: a 500 ms loop is detected in 60 s, **not** 1 s. That is intentional,
 /// and `success_metric_detection_bound_holds_for_every_shipped_interval` pins
 /// it explicitly so the bound is never over-claimed.
 ///
@@ -138,7 +138,7 @@ pub const MIN_SCANNER_STALENESS_THRESHOLD: Duration = Duration::from_secs(60);
 ///
 /// # Shared liveness fate
 ///
-/// There are seven labels but **five** spawned loops: [`Sla`](Self::Sla) and
+/// There are eight labels but **six** spawned loops: [`Sla`](Self::Sla) and
 /// [`ExternalOutbox`](Self::ExternalOutbox) are enforcement responsibilities
 /// *inside* the timeout loop, not tasks of their own. All three are registered
 /// and ticked together by `spawn_timeout_checker`, so they share one loop's
@@ -172,12 +172,17 @@ pub enum Scanner {
     Schedule,
     /// The bounded-pause auto-resumer (`spawn_pause_auto_resumer`).
     PauseAutoResume,
+    /// The dedicated audit-export task
+    /// (`crate::audit_export::spawn_audit_export_checker_for_shard`, issue
+    /// #1269). Previously folded into the timeout loop; split out to its own
+    /// task so a slow sink delays nothing but its own next tick.
+    AuditExport,
 }
 
 impl Scanner {
     /// Every scanner, in a stable order. Used by tests and docs to enumerate
     /// the bounded label set.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Timeout,
         Self::Sla,
         Self::PoisonPill,
@@ -185,6 +190,7 @@ impl Scanner {
         Self::Retention,
         Self::Schedule,
         Self::PauseAutoResume,
+        Self::AuditExport,
     ];
 
     /// Stable string representation, suitable for a metric label value.
@@ -198,6 +204,7 @@ impl Scanner {
             Self::Retention => "retention",
             Self::Schedule => "schedule",
             Self::PauseAutoResume => "pause_auto_resume",
+            Self::AuditExport => "audit_export",
         }
     }
 }
