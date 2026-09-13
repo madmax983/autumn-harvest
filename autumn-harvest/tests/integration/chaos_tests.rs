@@ -560,6 +560,7 @@ async fn chaos_repro_367_crash_orphan_is_reclaimed() {
         &mut conn,
         3,
         0,
+        None,
         &NoOpMetrics,
         &autumn_harvest::payload_codec::PayloadCodecs::default(),
     )
@@ -1263,6 +1264,9 @@ fn default_sweep_seeds_are_at_least_five_and_strand_an_orphan() {
 // `_body` (the shared-DB isolation guard from `chaos_db`) intentionally lives to
 // end-of-scope; see `DB_BODY_SERIAL`.
 #[allow(clippy::significant_drop_tightening)]
+// Issue #1459: one line added to a `reclaim_orphaned_tasks` call site pushed
+// this test one line over the limit.
+#[allow(clippy::too_many_lines)]
 async fn chaos_seeded_convergence_sweep() {
     const WORKLOAD: usize = 6;
 
@@ -1367,6 +1371,7 @@ async fn chaos_seeded_convergence_sweep() {
                 &mut conn,
                 3,
                 0,
+                None,
                 &NoOpMetrics,
                 &autumn_harvest::payload_codec::PayloadCodecs::default(),
             )

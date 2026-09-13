@@ -201,6 +201,21 @@ jobs:
         # find 0.6.0's migrations. See
         # scripts/check-changelog-connector-migration-version.sh.
         run: ./scripts/check-changelog-connector-migration-version.sh
+      - name: Check broker-connectors dead-letter-sink example
+        # Guards a real, reproduced-live defect: chapter 13's "(a) record
+        # into harvest -- the default mode" example -- the option for a
+        # directly-constructed ConnectorRuntime, the exact audience the
+        # section addresses -- installed RecordingDeadLetterSink, an
+        # in-memory, test-only sink per its own doc comment
+        # (autumn-harvest-plugin/src/connector/dead_letter.rs). It never
+        # writes harvest_connector_dead_letters -- that is
+        # PostgresDeadLetterSink, which is what HarvestPlugin itself
+        # installs as the real default (autumn-harvest-plugin/src/plugin.rs).
+        # A newcomer who copies the example gets a runtime that compiles,
+        # runs, and acknowledges poison messages with no error, but never
+        # durably records them: they vanish on restart. See
+        # scripts/check-broker-connector-dead-letter-sink-example.sh.
+        run: ./scripts/check-broker-connector-dead-letter-sink-example.sh
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Clippy autumn-harvest

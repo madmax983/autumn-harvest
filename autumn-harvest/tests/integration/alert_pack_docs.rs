@@ -36,6 +36,8 @@ const REQUIRED_ALERTS: &[&str] = &[
     "harvest_replication_unobservable",
     // Issue #953 — audit export to a SIEM sink.
     "harvest_audit_export_lag_high",
+    // Issue #1268 — the availability companion to the lag gauge.
+    "harvest_audit_export_unobservable",
 ];
 
 const REQUIRED_DRILLS: &[&str] = &[
@@ -101,6 +103,8 @@ const STABLE_PROMETHEUS_METRICS: &[&str] = &[
     // Issue #953 — audit export to a SIEM sink.
     "harvest_audit_export_lag",
     "harvest_audit_exported_total",
+    // Issue #1268 — the availability companion to the lag gauge.
+    "harvest_audit_export_observed",
     "harvest_replication_lag_bytes",
     "harvest_replication_standbys",
     "harvest_replication_observable",

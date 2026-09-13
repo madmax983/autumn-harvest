@@ -1834,7 +1834,7 @@ async fn export_once_on_conn(
         // Nothing claimed, but the lag gauge must still be emitted: an
         // operator's "is the export keeping up?" signal has to stay live
         // exactly when deliveries are NOT happening.
-        emit_lag(conn, shard_id, metrics).await;
+        emit_lag_and_observed(conn, shard_id, metrics).await;
         return Ok(0);
     };
 
@@ -1865,6 +1865,11 @@ async fn export_once_on_conn(
                 now,
             );
             apply_outcome(conn, shard_id, claim.claim_epoch, &outcome, now).await?;
+            // A serialization failure says nothing about the shard's cursor
+            // and lag. Both were readable this tick, moments ago, in
+            // `claim_shard`. So this tick still counts as observed
+            // (issue #1268).
+            emit_lag_and_observed(conn, shard_id, metrics).await;
             return Ok(0);
         }
     };
@@ -1957,13 +1962,26 @@ async fn export_once_on_conn(
         }
     };
 
-    emit_lag(conn, shard_id, metrics).await;
+    emit_lag_and_observed(conn, shard_id, metrics).await;
     Ok(delivered)
 }
 
-/// Emit `harvest.audit.export_lag` for one shard, best-effort.
+/// Emit `harvest.audit.export_lag` and `harvest.audit.export_observed` for
+/// one shard, best-effort.
+///
+/// **Always records `export_observed`, success or failure** (issue #1268).
+/// Before this, a failed cursor read or lag query returned silently, and
+/// `export_lag` simply kept its last value — commonly `0`, the caught-up
+/// reading. Prometheus then saw neither a high value nor an absent series
+/// while the shard went unexported: the two alerts the feature documents
+/// both stayed quiet. `export_observed` going to `0` is the signal a rule can
+/// alert on instead.
+///
+/// `export_lag` itself is untouched on failure, deliberately. A fabricated
+/// reading would conflate "behind" with "unreadable". The stale value is
+/// left exactly as before, and `export_observed` is the availability signal.
 #[cfg(feature = "db")]
-async fn emit_lag(
+async fn emit_lag_and_observed(
     conn: &mut diesel_async::AsyncPgConnection,
     shard_id: i32,
     metrics: &(dyn crate::telemetry::MetricsRecorder + Send + Sync),
@@ -1973,6 +1991,8 @@ async fn emit_lag(
 
     use crate::schema::harvest_audit_export_cursor::dsl as cur;
 
+    let shard_u16 = u16::try_from(shard_id).unwrap_or(u16::MAX);
+
     let acked: Result<Option<i64>, _> = cur::harvest_audit_export_cursor
         .find(shard_id)
         .select(cur::last_acked_seq)
@@ -1980,10 +2000,16 @@ async fn emit_lag(
         .await
         .optional();
     let Ok(Some(acked)) = acked else {
+        metrics.record_audit_export_observed(shard_u16, false);
         return;
     };
-    if let Ok(lag) = export_lag_seconds(conn, acked, Utc::now()).await {
-        metrics.record_audit_export_lag(u16::try_from(shard_id).unwrap_or(u16::MAX), lag);
+
+    match export_lag_seconds(conn, acked, Utc::now()).await {
+        Ok(lag) => {
+            metrics.record_audit_export_observed(shard_u16, true);
+            metrics.record_audit_export_lag(shard_u16, lag);
+        }
+        Err(_) => metrics.record_audit_export_observed(shard_u16, false),
     }
 }
 
@@ -2061,7 +2087,13 @@ pub async fn fire_due_audit_exports(
             // autumn-foundation/autumn-harvest#1269 removes the constraint
             // outright by giving export its own task.
             for shard in shard_assignments {
+                // A shard the scanner cannot reach is unobserved, not merely
+                // silent (issue #1268). Every `continue` below must mark it
+                // so before moving on. Otherwise `export_lag` is the only
+                // signal left, and it just keeps its stale reading.
+                let shard_u16 = u16::try_from(shard.as_i32()).unwrap_or(u16::MAX);
                 let Some(pool) = sp.exact_pool_for(*shard).cloned() else {
+                    metrics.record_audit_export_observed(shard_u16, false);
                     continue;
                 };
                 // Bounded, never a bare `pool.get()` — see `SHARD_ACQUIRE_BOUND`.
@@ -2072,6 +2104,7 @@ pub async fn fire_due_audit_exports(
                             tracing::error!(
                                 "[audit_export] failed to get connection to shard {shard:?}: {e:?}"
                             );
+                            metrics.record_audit_export_observed(shard_u16, false);
                             continue;
                         }
                         Err(_elapsed) => {
@@ -2083,6 +2116,7 @@ pub async fn fire_due_audit_exports(
                                  saturated or too small: the scanner already holds one connection \
                                  from it, so a max_size of 1 can never yield a second"
                             );
+                            metrics.record_audit_export_observed(shard_u16, false);
                             continue;
                         }
                     };
@@ -2092,11 +2126,16 @@ pub async fn fire_due_audit_exports(
                 // one.
                 match export_once_on_conn(&mut shard_conn, &config, shard.as_i32(), metrics).await {
                     Ok(n) => total += n,
-                    Err(e) => tracing::error!(
-                        shard = shard.as_i32(),
-                        error = %e,
-                        "[audit_export] shard export failed"
-                    ),
+                    Err(e) => {
+                        tracing::error!(
+                            shard = shard.as_i32(),
+                            error = %e,
+                            "[audit_export] shard export failed"
+                        );
+                        // `export_once_on_conn` returned before it could emit
+                        // either gauge for this tick (issue #1268).
+                        metrics.record_audit_export_observed(shard_u16, false);
+                    }
                 }
             }
         }
@@ -2119,11 +2158,19 @@ pub async fn fire_due_audit_exports(
             // sequenced after it.
             match export_once_on_conn(conn, &config, shard, metrics).await {
                 Ok(n) => total += n,
-                Err(e) => tracing::error!(
-                    shard,
-                    error = %e,
-                    "[audit_export] export failed on the default shard"
-                ),
+                Err(e) => {
+                    tracing::error!(
+                        shard,
+                        error = %e,
+                        "[audit_export] export failed on the default shard"
+                    );
+                    // See the sharded arm above (issue #1268): a propagated
+                    // error means neither gauge was emitted this tick.
+                    metrics.record_audit_export_observed(
+                        u16::try_from(shard).unwrap_or(u16::MAX),
+                        false,
+                    );
+                }
             }
         }
     }
