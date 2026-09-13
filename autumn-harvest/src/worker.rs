@@ -28298,6 +28298,70 @@ impl Worker {
 /// own retry loop -- shares this one bound.
 const WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND: Duration = Duration::from_secs(2);
 
+/// Backoff schedule for [`acquire_conn_for_workflow_task_timeout_recovery`]:
+/// seven attempts, bounding the whole retry to roughly thirty seconds
+/// worst case. Long enough for the transient CI-runner contention burst
+/// issue #1459 recorded to clear, but not indefinite.
+const WORKFLOW_TASK_TIMEOUT_BACKOFF_MS: &[u64] = &[0, 200, 500, 1_000, 2_000, 4_000, 8_000];
+
+/// Acquire a pool connection for `BodyTimedOut` recovery, retrying across
+/// [`WORKFLOW_TASK_TIMEOUT_BACKOFF_MS`] with each attempt bounded by
+/// [`WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND`].
+///
+/// Shared by [`reset_timed_out_workflow_task`] and
+/// [`quarantine_workflow_task_timeout`] (issue #1459). Review on PR
+/// #1516/#1517 found quarantine's single bounded attempt gave up far
+/// sooner than reset's retry loop, for no reason. Both recover from the
+/// same transient saturation. `op` names the caller for logging.
+///
+/// Returns the last attempt's failure description once every attempt is
+/// exhausted. Neither caller has a fallback for that case. Quarantining a
+/// task and resetting one both need a connection to write anything at
+/// all, so there is nothing left to try without one.
+async fn acquire_conn_for_workflow_task_timeout_recovery(
+    pool: &DbPool,
+    task_id: uuid::Uuid,
+    op: &str,
+) -> Result<
+    deadpool::managed::Object<
+        diesel_async::pooled_connection::AsyncDieselConnectionManager<
+            diesel_async::AsyncPgConnection,
+        >,
+    >,
+    String,
+> {
+    let mut last_err = None;
+    for &delay_ms in WORKFLOW_TASK_TIMEOUT_BACKOFF_MS {
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        match tokio::time::timeout(WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND, pool.get()).await {
+            Ok(Ok(c)) => return Ok(c),
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    task_id = %task_id,
+                    op,
+                    error = %e,
+                    "workflow task timeout recovery: pool unavailable, retrying"
+                );
+                last_err = Some(e.to_string());
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    task_id = %task_id,
+                    op,
+                    bound = ?WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND,
+                    "workflow task timeout recovery: pool checkout exceeded its bound, retrying"
+                );
+                last_err = Some(format!(
+                    "pool acquisition exceeded {WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND:?}"
+                ));
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| "pool unavailable".to_string()))
+}
+
 /// Look up the workflow name and queue name for timeout metric labels.
 ///
 /// Falls back to `("unknown", "default")` on any DB or pool failure, or on
@@ -28352,27 +28416,19 @@ pub async fn quarantine_workflow_task_timeout(
     use crate::schema::harvest_workflow_executions::dsl as exec_dsl;
     use diesel::BoolExpressionMethods;
 
-    let mut conn = match tokio::time::timeout(WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND, pool.get())
-        .await
-    {
-        Ok(Ok(c)) => c,
-        Ok(Err(e)) => {
-            tracing::error!(
-                task_id = %task_id,
-                error = %e,
-                "workflow task timeout quarantine: pool exhausted"
-            );
-            return;
-        }
-        Err(_elapsed) => {
-            tracing::error!(
-                task_id = %task_id,
-                bound = ?WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND,
-                "workflow task timeout quarantine: pool checkout exceeded its bound"
-            );
-            return;
-        }
-    };
+    let mut conn =
+        match acquire_conn_for_workflow_task_timeout_recovery(pool, task_id, "quarantine").await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(
+                    task_id = %task_id,
+                    error = %e,
+                    "workflow task timeout quarantine: pool exhausted after retries; \
+                     task may be stuck RUNNING until worker stops"
+                );
+                return;
+            }
+        };
 
     let reason = crate::dlq::DeadLetterReason::WorkflowTaskTimeout {
         task_timeout_strikes: new_strikes,
@@ -28696,76 +28752,22 @@ pub async fn quarantine_workflow_task_timeout(
 pub async fn reset_timed_out_workflow_task(pool: &DbPool, task_id: uuid::Uuid, worker_id: &str) {
     use crate::schema::harvest_task_queue::dsl;
 
-    // Retry acquiring a pool connection: a transient pool saturation during
-    // timeout handling would otherwise leave the task stuck in RUNNING on a
-    // live worker (the orphan reclaimer skips tasks owned by live workers).
-    //
-    // Issue #1459 traced a real stuck row to this exact budget. The earlier
-    // four-attempt, 2.7-second schedule exhausted during a CI-runner
-    // contention burst that cleared a few seconds later.
-    //
-    // Codex review (PR #1517) found the first widening attempt still did not
-    // help the saturation case this comment describes. Harvest configures no
-    // deadpool `Timeouts` (see `shard_acquire_bound`'s own doc comment), so a
-    // saturated pool makes a bare `pool.get().await` wait forever rather than
-    // return `Err`. A retry loop around an unbounded wait like that never
-    // reruns -- the first attempt simply never returns. Each attempt below
-    // is now itself bounded by [`WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND`]. A
-    // checkout that cannot complete counts as one failed attempt. The loop
-    // then moves to the next backoff step instead of parking here forever.
-    // Combined with the seven-attempt schedule, this bounds the whole
-    // reset to roughly thirty seconds worst case. That is long enough for
-    // the transient contention burst on record to clear, but no longer
-    // indefinite. This path still gives up and logs the row as stuck if
-    // that budget runs out.
-    //
-    // This reset was reachable only after the metric-name lookup above
-    // ran its own checkout, unbounded until this fix. A saturated pool
-    // could wedge the task before this retry loop ever ran. That lookup,
-    // and the quarantine path's single checkout, now share this same
-    // bound.
-    let mut conn = {
-        let mut last_err = None;
-        let backoff_ms: &[u64] = &[0, 200, 500, 1_000, 2_000, 4_000, 8_000];
-        let mut result = None;
-        for &delay_ms in backoff_ms {
-            if delay_ms > 0 {
-                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-            }
-            match tokio::time::timeout(WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND, pool.get()).await {
-                Ok(Ok(c)) => {
-                    result = Some(c);
-                    break;
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!(
-                        task_id = %task_id,
-                        worker_id = %worker_id,
-                        error = %e,
-                        "workflow task timeout reset: pool unavailable, retrying"
-                    );
-                    last_err = Some(e.to_string());
-                }
-                Err(_elapsed) => {
-                    tracing::warn!(
-                        task_id = %task_id,
-                        worker_id = %worker_id,
-                        bound = ?WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND,
-                        "workflow task timeout reset: pool checkout exceeded its bound, retrying"
-                    );
-                    last_err = Some(format!(
-                        "pool acquisition exceeded {WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND:?}"
-                    ));
-                }
-            }
-        }
-        if let Some(c) = result {
-            c
-        } else {
+    // A transient pool saturation during timeout handling would otherwise
+    // leave the task stuck in RUNNING on a live worker. The orphan
+    // reclaimer skips tasks owned by live workers, so nothing else would
+    // recover it. Issue #1459 traced a real stuck row to exactly this
+    // gap. See [`acquire_conn_for_workflow_task_timeout_recovery`]'s own
+    // doc comment for how this retries and why quarantine shares the
+    // same budget.
+    let mut conn = match acquire_conn_for_workflow_task_timeout_recovery(pool, task_id, "reset")
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => {
             tracing::error!(
                 task_id = %task_id,
                 worker_id = %worker_id,
-                error = ?last_err,
+                error = %e,
                 "workflow task timeout reset: pool exhausted after retries; \
                  task may be stuck RUNNING until worker stops"
             );
