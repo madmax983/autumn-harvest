@@ -35,8 +35,10 @@
 //! Write behavior does not. `harvest_audit_log_unexported_idx` is a partial
 //! index on `export_seq IS NULL`. An unconfigured deployment leaves every row
 //! `NULL` forever, so the index matches the whole audit table, and every
-//! audit insert pays its maintenance cost. The cost is bounded by the audit
-//! retention window, not unbounded, but it is real. Tracked as issue #1272.
+//! audit insert pays its maintenance cost. That cost is bounded by the audit
+//! retention window only while retention stays enabled. At
+//! `audit_retention_days = 0` the table, and the index, grow without bound.
+//! Tracked as issue #1272.
 //!
 //! # Where the monotonic sequence comes from (and why not `BIGSERIAL`)
 //!

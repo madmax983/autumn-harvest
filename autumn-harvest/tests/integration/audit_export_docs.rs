@@ -47,16 +47,22 @@ fn contains_collapsed(haystack: &str, needle: &str) -> bool {
 const FALSE_CLAIM: &str = "byte-identical to before this module existed";
 
 /// Both markers must appear, and close enough together that an edit cannot
-/// separate the index name from the issue that explains its cost.
-fn names_index_cost_near(text: &str, marker: &str) -> bool {
+/// separate one from the other.
+fn markers_near(text: &str, a: &str, b: &str) -> bool {
     let flat = collapse_ws(text);
-    let Some(marker_at) = flat.find(marker) else {
+    let Some(a_at) = flat.find(a) else {
         return false;
     };
     const WINDOW: usize = 500;
-    let start = marker_at.saturating_sub(WINDOW);
-    let end = (marker_at + marker.len() + WINDOW).min(flat.len());
-    flat[start..end].contains("1272")
+    let start = a_at.saturating_sub(WINDOW);
+    let end = (a_at + a.len() + WINDOW).min(flat.len());
+    flat[start..end].contains(b)
+}
+
+/// Both markers must appear, and close enough together that an edit cannot
+/// separate the index name from the issue that explains its cost.
+fn names_index_cost_near(text: &str, marker: &str) -> bool {
+    markers_near(text, marker, "1272")
 }
 
 #[test]
@@ -139,6 +145,66 @@ fn migration_header_already_names_the_index_cost() {
          issue #1272",
         path.display()
     );
+}
+
+/// The comment next to `CREATE INDEX` repeated a false claim. The header
+/// above it already retracts that claim: the index "stays empty (and free)"
+/// with no sink configured. A reader at the index definition may never
+/// scroll back up to see the header contradict it.
+#[test]
+fn migration_index_comment_does_not_restate_the_false_claim() {
+    let path =
+        repo_root().join("autumn-harvest/migrations/20260728000000_harvest_audit_export/up.sql");
+    let text = read_normalized(&path);
+    assert!(
+        !contains_collapsed(
+            &text,
+            "it stays empty (and free) when no sink is configured"
+        ),
+        "{}: the CREATE INDEX comment must not claim the index stays empty; \
+         it matches every row when unconfigured (issue #1272)",
+        path.display()
+    );
+}
+
+/// `docs/upgrading/0.5.0.md`'s migration-table row for this migration made
+/// the same false claim about both partial indexes, and called the whole
+/// migration "inert" with no caveat.
+#[test]
+fn upgrade_guide_does_not_restate_the_false_claim() {
+    let path = repo_root().join("docs/upgrading/0.5.0.md");
+    let text = read_normalized(&path);
+    assert!(
+        !contains_collapsed(&text, "both stay empty when no sink is configured"),
+        "{}: the audit-export row must not claim both indexes stay empty; \
+         the unexported one matches every row when unconfigured (issue \
+         #1272)",
+        path.display()
+    );
+    assert!(
+        markers_near(&text, "harvest_audit_export", "1272"),
+        "{}: the audit-export row must reference issue #1272",
+        path.display()
+    );
+}
+
+/// Issue #1272's own fix added a "bounded by the retention window" claim.
+/// That is itself conditional: `audit_retention_days = 0` disables the purge
+/// (`retention.rs`'s `audit_retention_days > 0` gate), so the table and the
+/// index grow without bound. Both sources that make the claim must qualify
+/// it, not repeat the same class of overclaim this issue exists to retract.
+#[test]
+fn boundedness_claim_is_qualified_by_retention_setting() {
+    for rel in ["autumn-harvest/src/audit_export.rs", "docs/audit-export.md"] {
+        let path = repo_root().join(rel);
+        let text = read_normalized(&path);
+        assert!(
+            markers_near(&text, "bounded by the", "audit_retention_days"),
+            "{}: a 'bounded by the retention window' claim must name \
+             `audit_retention_days = 0` as the case where it does not hold",
+            path.display()
+        );
+    }
 }
 
 /// The AC8 section header in the DB-gated integration suite must not

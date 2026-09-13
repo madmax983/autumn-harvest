@@ -22,8 +22,9 @@ per-shard cursor that advances only on acknowledgement.
   `harvest_audit_log_unexported_idx` is a partial index on `export_seq IS
   NULL`. An unconfigured deployment leaves every row `NULL` forever, so the
   index matches the whole audit table. Every audit insert then pays its
-  maintenance cost, bounded by the retention window rather than unbounded.
-  Tracked as issue #1272.
+  maintenance cost. That cost is bounded by the retention window only while
+  retention stays enabled — at `audit_retention_days = 0` the index grows
+  without bound too. Tracked as issue #1272.
 - **It never touches workflow history.** No new `WorkflowEvent` variant, no
   replay-determinism impact. Audit rows are operational metadata; the exporter
   only reads them.
