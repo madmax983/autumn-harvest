@@ -49,11 +49,11 @@ const FALSE_CLAIM: &str = "byte-identical to before this module existed";
 /// Both markers must appear, and close enough together that an edit cannot
 /// separate one from the other.
 fn markers_near(text: &str, a: &str, b: &str) -> bool {
+    const WINDOW: usize = 500;
     let flat = collapse_ws(text);
     let Some(a_at) = flat.find(a) else {
         return false;
     };
-    const WINDOW: usize = 500;
     let start = a_at.saturating_sub(WINDOW);
     let end = (a_at + a.len() + WINDOW).min(flat.len());
     flat[start..end].contains(b)
