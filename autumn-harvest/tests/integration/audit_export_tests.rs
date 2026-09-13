@@ -2663,7 +2663,7 @@ async fn spawn_audit_export_checker_for_shard_exports_independently() {
 /// connection instead of one needing a second while holding the first.
 #[tokio::test]
 async fn a_dedicated_export_task_still_exports_on_a_size_one_pool_shared_with_the_timeout_checker()
- {
+{
     let _guard = TEST_SERIAL.lock().await;
     let sink = install(Arc::new(RecordingSink::new(200)), 100);
     let (mut conn, container) = make_conn().await;
