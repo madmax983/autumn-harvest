@@ -28286,10 +28286,24 @@ impl Worker {
 // Workflow-task timeout helpers (issue #494)
 // ---------------------------------------------------------------------------
 
+/// Bound on one pool checkout in the `BodyTimedOut` recovery path below.
+///
+/// Harvest configures no deadpool `Timeouts` (see `shard_acquire_bound`'s
+/// own doc comment), so a bare `pool.get().await` waits forever under real
+/// pool saturation instead of returning `Err`. Issue #1459's diagnosis,
+/// and later review on PR #1516/#1517, found that an unbounded checkout
+/// anywhere in this path defeats retrying. Control never reaches a later,
+/// bounded attempt otherwise. Every checkout the `BodyTimedOut` arm makes
+/// -- the metric-name lookup, the quarantine path, and the reset path's
+/// own retry loop -- shares this one bound.
+const WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND: Duration = Duration::from_secs(2);
+
 /// Look up the workflow name and queue name for timeout metric labels.
 ///
-/// Falls back to `("unknown", "default")` on any DB or pool failure so the
-/// metric is always emitted even when the execution row is gone.
+/// Falls back to `("unknown", "default")` on any DB or pool failure, or on
+/// a checkout that exceeds [`WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND`]. The
+/// metric is always emitted, even when the execution row is gone or the
+/// pool is saturated.
 async fn workflow_task_timeout_metric_names(
     pool: &DbPool,
     exec_id: Option<uuid::Uuid>,
@@ -28299,7 +28313,9 @@ async fn workflow_task_timeout_metric_names(
     let Some(exec_uuid) = exec_id else {
         return ("unknown".to_string(), "default".to_string());
     };
-    let Ok(mut conn) = pool.get().await else {
+    let Ok(Ok(mut conn)) =
+        tokio::time::timeout(WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND, pool.get()).await
+    else {
         return ("unknown".to_string(), "default".to_string());
     };
     dsl::harvest_workflow_executions
@@ -28336,13 +28352,23 @@ pub async fn quarantine_workflow_task_timeout(
     use crate::schema::harvest_workflow_executions::dsl as exec_dsl;
     use diesel::BoolExpressionMethods;
 
-    let mut conn = match pool.get().await {
-        Ok(c) => c,
-        Err(e) => {
+    let mut conn = match tokio::time::timeout(WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND, pool.get())
+        .await
+    {
+        Ok(Ok(c)) => c,
+        Ok(Err(e)) => {
             tracing::error!(
                 task_id = %task_id,
                 error = %e,
                 "workflow task timeout quarantine: pool exhausted"
+            );
+            return;
+        }
+        Err(_elapsed) => {
+            tracing::error!(
+                task_id = %task_id,
+                bound = ?WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND,
+                "workflow task timeout quarantine: pool checkout exceeded its bound"
             );
             return;
         }
@@ -28684,15 +28710,20 @@ pub async fn reset_timed_out_workflow_task(pool: &DbPool, task_id: uuid::Uuid, w
     // saturated pool makes a bare `pool.get().await` wait forever rather than
     // return `Err`. A retry loop around an unbounded wait like that never
     // reruns -- the first attempt simply never returns. Each attempt below
-    // is now itself bounded by `RESET_ACQUIRE_ATTEMPT_BOUND`. A checkout
-    // that cannot complete counts as one failed attempt. The loop then
-    // moves to the next backoff step instead of parking here forever.
+    // is now itself bounded by [`WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND`]. A
+    // checkout that cannot complete counts as one failed attempt. The loop
+    // then moves to the next backoff step instead of parking here forever.
     // Combined with the seven-attempt schedule, this bounds the whole
     // reset to roughly thirty seconds worst case. That is long enough for
     // the transient contention burst on record to clear, but no longer
     // indefinite. This path still gives up and logs the row as stuck if
     // that budget runs out.
-    const RESET_ACQUIRE_ATTEMPT_BOUND: Duration = Duration::from_secs(2);
+    //
+    // This reset was reachable only after the metric-name lookup above
+    // ran its own checkout, unbounded until this fix. A saturated pool
+    // could wedge the task before this retry loop ever ran. That lookup,
+    // and the quarantine path's single checkout, now share this same
+    // bound.
     let mut conn = {
         let mut last_err = None;
         let backoff_ms: &[u64] = &[0, 200, 500, 1_000, 2_000, 4_000, 8_000];
@@ -28701,7 +28732,7 @@ pub async fn reset_timed_out_workflow_task(pool: &DbPool, task_id: uuid::Uuid, w
             if delay_ms > 0 {
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             }
-            match tokio::time::timeout(RESET_ACQUIRE_ATTEMPT_BOUND, pool.get()).await {
+            match tokio::time::timeout(WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND, pool.get()).await {
                 Ok(Ok(c)) => {
                     result = Some(c);
                     break;
@@ -28719,11 +28750,11 @@ pub async fn reset_timed_out_workflow_task(pool: &DbPool, task_id: uuid::Uuid, w
                     tracing::warn!(
                         task_id = %task_id,
                         worker_id = %worker_id,
-                        bound = ?RESET_ACQUIRE_ATTEMPT_BOUND,
+                        bound = ?WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND,
                         "workflow task timeout reset: pool checkout exceeded its bound, retrying"
                     );
                     last_err = Some(format!(
-                        "pool acquisition exceeded {RESET_ACQUIRE_ATTEMPT_BOUND:?}"
+                        "pool acquisition exceeded {WORKFLOW_TASK_TIMEOUT_ACQUIRE_BOUND:?}"
                     ));
                 }
             }
