@@ -6239,7 +6239,7 @@
       "description": "Alert: harvest_audit_export_unobservable (docs/runbooks/harvest-alerts.md#harvest_audit_export_unobservable) Whether the exporter could read this shard's cursor and lag this tick \u2014 a connection it cannot acquire, a failed cursor read, or a failed lag query all report 0. Read this panel FIRST: a Prometheus gauge keeps exporting its last value, so while this is 0 the lag panel above is frozen at its last reading rather than reflecting reality."
     },
     {
-      "id": 956,
+      "id": 957,
       "type": "timeseries",
       "title": "RPO known (0 = readable but unmeasurable)",
       "datasource": {
