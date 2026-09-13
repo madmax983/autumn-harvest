@@ -14,7 +14,8 @@
 -- deployment matches EVERY row. Such a deployment therefore pays a full index
 -- build at migration time and index maintenance on every subsequent audit
 -- insert, for a feature it never turns on. Bounded by the audit retention
--- window rather than unbounded, but real. Tracked as
+-- window only while retention stays enabled: `audit_retention_days = 0`
+-- disables the purge and removes that bound too. Tracked as
 -- autumn-foundation/autumn-harvest#1272, which weighs creating the index
 -- lazily on first opt-in against leaving it here.
 
@@ -49,7 +50,8 @@ COMMENT ON COLUMN harvest_audit_log.export_seq IS
     'the cursor, not these values, which is what makes re-export byte-identical.';
 
 -- Claim scan: `WHERE export_seq IS NULL ORDER BY occurred_at, id LIMIT n`.
--- A partial index, so it stays empty (and free) when no sink is configured.
+-- A partial index, but it is NOT empty when no sink is configured: it then
+-- matches every row. See the header caveat above (issue #1272).
 CREATE INDEX IF NOT EXISTS harvest_audit_log_unexported_idx
     ON harvest_audit_log (occurred_at, id)
     WHERE export_seq IS NULL;

@@ -16,9 +16,15 @@ HTTP client, a `reqwest` signed-webhook implementation in the plugin, a
 two-transaction scanner that never holds a row lock across network I/O, and a
 per-shard cursor that advances only on acknowledgement.
 
-- **It is opt-in.** With no sink configured, nothing changes: no sequence is
-  assigned, no cursor row is created, the scanner returns before issuing a
-  single query.
+- **It is opt-in, but one cost is not zero.** With no sink configured, no
+  sequence is assigned, no cursor row is created, and the scanner returns
+  before issuing a single query. Insert behavior is the exception:
+  `harvest_audit_log_unexported_idx` is a partial index on `export_seq IS
+  NULL`. An unconfigured deployment leaves every row `NULL` forever, so the
+  index matches the whole audit table. Every audit insert then pays its
+  maintenance cost. That cost is bounded by the retention window only while
+  retention stays enabled — at `audit_retention_days = 0` the index grows
+  without bound too. Tracked as issue #1272.
 - **It never touches workflow history.** No new `WorkflowEvent` variant, no
   replay-determinism impact. Audit rows are operational metadata; the exporter
   only reads them.

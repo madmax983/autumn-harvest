@@ -358,6 +358,21 @@ jobs:
       - name: Run docs/rnd/determinism-static-analysis.md guards (also on docs-only PRs)
         run: "cargo test -p autumn-harvest --no-default-features --features testing --test integration determinism_static_analysis_docs::"
 
+      # Issue #1272: same reasoning as the five steps above, for the
+      # audit-export "opt-in, one cost is not zero" caveat. `docs/audit-export.md`
+      # and `docs/changelog.d/pr-953-audit-export.md` both match the docs-only
+      # filter, so a PR that edits only one of them — dropping the partial-index
+      # cost caveat, restoring the retracted "zero-cost when unconfigured"
+      # wording — sets `code=false` and skips the entire `test` matrix. That is
+      # precisely the change class these guards exist to catch, so they run
+      # here in the ungated `lint` job.
+      #
+      # Guarded by `audit_export_docs::guards_run_on_docs_only_changes`, which
+      # fails if this step is removed or becomes conditional. Quoted for the
+      # same trailing-`::` YAML reason as above.
+      - name: Run audit-export opt-in-cost guards (also on docs-only PRs)
+        run: "cargo test -p autumn-harvest --no-default-features --features testing --test integration audit_export_docs::"
+
       # Folio corpus harness: internal link check across all of docs/ (see
       # docs/audits/corpus-link-check.py). Same reasoning as the docs-only
       # guards above — a broken link is exactly the change class a docs-only

@@ -271,7 +271,8 @@ async fn cursor_acked(conn: &mut diesel_async::AsyncPgConnection, shard: i32) ->
         .expect("cursor row")
 }
 
-// ── AC8: opt-in and zero-cost when unconfigured ──────────────────────────────
+// ── AC8: opt-in, query behavior unchanged when unconfigured (issue #1272: ───
+// the partial index is not free — see audit_export.rs's module doc) ────────
 
 #[tokio::test]
 async fn unconfigured_export_never_touches_anything() {
