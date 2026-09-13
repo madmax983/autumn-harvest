@@ -857,8 +857,20 @@ jobs:
       # SEMAPHORE_SHARD_COUNT below MUST equal this list's length -- GitHub
       # Actions matrix expressions can't derive one from the other, so keep
       # them in sync by hand when changing the shard count.
+      #
+      # 11, not 10 (issue #1267 review). `row_ordinal % 10` put
+      # `integration_e2e` and `quota_enforcement_tests` on one shard. These
+      # are the manifest's two largest, most wall-clock-timeout-shaped
+      # suites. Their manifest positions are exactly 10 apart, so the old
+      # count always collided them. That shard ran ~35 min against 18-28 min
+      # for every other shard. CI-health flake reports name it most often
+      # (docs/rnd/2026-09-0{4,8,11}-ci-health-semaphore*.md). 11 shares no
+      # factor with the 10-row gap, so it cannot reproduce the collision.
+      # Chosen over 12/13/14 by simulating per-shard test weight
+      # (`#[tokio::test]` count per manifest row) and picking the smallest
+      # max-min spread.
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -896,7 +908,7 @@ jobs:
           # into a panic, so "the Redis suites stopped testing anything" is a
           # red build here rather than a silent green.
           HARVEST_TEST_REQUIRE_REDIS: "1"
-          SEMAPHORE_SHARD_COUNT: "10"
+          SEMAPHORE_SHARD_COUNT: "11"
           SEMAPHORE_SHARD_INDEX: ${{ matrix.shard }}
         run: bash .github/ci/run-suites.sh run linux
       # Issue #958, AC2: re-run the store/replay/retention suites against the
