@@ -1213,9 +1213,14 @@ fn summary_view(
 
     SessionView {
         execution_id: exec_id.map_or_else(|| "<unreadable id>".to_string(), shortened),
+        // A goal is shown only when the WHOLE document reads as a task. The
+        // goal is projected on its own, so a document the single status
+        // refuses can still answer that projection. The two must agree. See
+        // [`inspect::SessionSummary::task_is_damaged`].
         goal: row
             .goal
             .as_deref()
+            .filter(|_| !row.task_is_damaged)
             .map_or_else(|| "<unreadable task>".to_string(), shortened),
         state: row
             .state
@@ -1288,10 +1293,21 @@ pub fn decidable(
     }
 }
 
+/// The goal ONE status shows, or nothing when the document is not a task.
+///
+/// The whole document must deserialise. A status reads one session, so it can
+/// hold the document the listing can only project field by field. The listing
+/// carries its own test of the same question, and the two must answer alike:
+/// see [`inspect::SessionSummary::task_is_damaged`].
+pub fn task_goal(input_json: &str) -> Option<String> {
+    serde_json::from_str::<SessionTask>(input_json)
+        .ok()
+        .map(|task| task.goal)
+}
+
 /// Build one operator view.
 fn view(reader: &Connection, row: &ExecutionRow, blocked: &Parked, full: bool) -> SessionView {
-    let goal = serde_json::from_str::<SessionTask>(&row.input_json)
-        .map_or_else(|_| "<unreadable task>".to_string(), |task| task.goal);
+    let goal = task_goal(&row.input_json).unwrap_or_else(|| "<unreadable task>".to_string());
     let answer = row
         .output_json
         .as_deref()

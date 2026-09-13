@@ -151,6 +151,33 @@ pub struct SessionSummary {
     /// sorts in a temporary B-tree, which the plan guard refuses for this
     /// query.
     pub report_is_damaged: bool,
+    /// Is the recorded task a document this daemon cannot read as a whole?
+    ///
+    /// The goal beside it is projected on its own, so a document the single
+    /// status refuses can still answer that projection with a plausible goal.
+    /// The listing then attributed a task to a session whose task nothing can
+    /// read, and `status` called the same row unreadable.
+    ///
+    /// Five shapes reach that state, and each one is measured. A declared key
+    /// is repeated. A declared key is absent. A declared key holds the wrong
+    /// type. A count sits outside the range of the Rust field. A text field
+    /// holds no character.
+    ///
+    /// The test is therefore the whole declared shape, and not the goal
+    /// alone. Every field `SessionTask` declares must be present once, and of
+    /// the type and range that field reads as.
+    ///
+    /// Only the DECLARED keys are counted, as with
+    /// [`SessionSummary::report_is_damaged`]. An undeclared key is measured to
+    /// deserialise, and its value is never decoded. A broken escape inside one
+    /// therefore does not stop the whole document from reading.
+    ///
+    /// Two limits stand. `approval_timeout_secs` is a `u64`, and `SQLite`
+    /// holds integers as `i64`. The top of that range is compared as a float,
+    /// which does not separate the last few values exactly. The `workspace`
+    /// and `model` fields are read only as far as the listing cuts them. Text
+    /// that holds no character BEYOND that cut is therefore not seen.
+    pub task_is_damaged: bool,
     /// Where this row sits in the table, which is the cursor that reads the
     /// rows BEFORE it. The listing is capped, so an old session waiting for a
     /// decision would otherwise become unreachable once enough newer ones
@@ -167,6 +194,19 @@ pub struct SessionSummary {
     /// `VACUUM`, so this is the bound of what the schema allows.
     pub row: i64,
 }
+
+/// The top of the range `SessionTask::approval_timeout_secs` reads as.
+///
+/// The field is a `u64`, and `SQLite` holds an integer as an `i64`. A recorded
+/// value above that range extracts as a float. The bound is therefore a float
+/// too, so that the two compare.
+///
+/// The value is two to the power of 64, which a float holds exactly. It is
+/// the first float ABOVE `u64::MAX`, because no float separates the two. A
+/// recorded count in that gap therefore passes this bound and fails to
+/// deserialise. The gap is the last few values of the range, and a float
+/// cannot be made to divide it.
+pub const TIMEOUT_CEILING: f64 = 18_446_744_073_709_551_616.0;
 
 /// How many characters of one listed field are read.
 ///
@@ -935,6 +975,34 @@ pub const SESSIONS_QUERY: &str = "SELECT \
                                WHERE key IN ('answer', 'turns', 'tool_calls', 'stop')) \
                               > 4 \
                          ELSE 0 END, \
+                    CASE WHEN typeof(input_json) = 'text' \
+                         THEN CASE WHEN json_valid(input_json) \
+                                   THEN NOT coalesce(( \
+                                        json_type(input_json, '$.goal') = 'text' \
+                                    AND json_type(input_json, '$.workspace') = 'text' \
+                                    AND json_type(input_json, '$.model') = 'text' \
+                                    AND json_type(input_json, '$.max_turns') = 'integer' \
+                                    AND json_extract(input_json, '$.max_turns') \
+                                        BETWEEN 0 AND ?6 \
+                                    AND json_type(input_json, \
+                                                  '$.approval_timeout_secs') = 'integer' \
+                                    AND json_extract(input_json, \
+                                                     '$.approval_timeout_secs') \
+                                        BETWEEN 0 AND ?7 \
+                                    AND (SELECT count(*) FROM json_each(input_json) \
+                                         WHERE key IN ('goal', 'max_turns', \
+                                                       'approval_timeout_secs', \
+                                                       'workspace', 'model')) = 5), 0) \
+                                   ELSE 1 END \
+                         ELSE 1 END, \
+                    CASE WHEN typeof(input_json) = 'text' AND json_valid(input_json) \
+                          AND json_type(input_json, '$.workspace') = 'text' \
+                         THEN coalesce(substr(cast(json_extract(input_json, '$.workspace') \
+                                                   as blob), 1, ?3), zeroblob(0)) END, \
+                    CASE WHEN typeof(input_json) = 'text' AND json_valid(input_json) \
+                          AND json_type(input_json, '$.model') = 'text' \
+                         THEN coalesce(substr(cast(json_extract(input_json, '$.model') \
+                                                   as blob), 1, ?3), zeroblob(0)) END, \
                     rowid \
              FROM harvest_executions WHERE +workflow_name = ?1 \
              AND rowid < ?4 \
@@ -1008,7 +1076,9 @@ pub fn executions(
                 MAX_LISTED_SESSIONS + 1,
                 MAX_LISTED_BYTES,
                 no_cursor(before),
-                COUNTER_CEILING
+                COUNTER_CEILING,
+                i64::from(u32::MAX),
+                TIMEOUT_CEILING
             ],
             |row| {
                 Ok(SessionSummary {
@@ -1022,7 +1092,14 @@ pub fn executions(
                     error: cut_text(row.get(7)?, LISTED_READ_CHARS, MAX_LISTED_BYTES),
                     error_is_damaged: row.get(8)?,
                     report_is_damaged: row.get(9)?,
-                    row: row.get(10)?,
+                    // The query decides the shape of the document. The two
+                    // short text fields beside it are decoded HERE. Only Rust
+                    // reads the bytes as characters, and a field that holds
+                    // none is a field `status` refuses.
+                    task_is_damaged: row.get::<_, bool>(10)?
+                        || cut_text(row.get(11)?, LISTED_READ_CHARS, MAX_LISTED_BYTES).is_none()
+                        || cut_text(row.get(12)?, LISTED_READ_CHARS, MAX_LISTED_BYTES).is_none(),
+                    row: row.get(13)?,
                 })
             },
         )

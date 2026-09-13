@@ -3346,6 +3346,7 @@ fn every_paged_query_is_planned_as_a_seek() {
     };
 
     let top = crate::inspect::no_cursor(None);
+    let turn_ceiling = i64::from(u32::MAX);
     let cases = [
         (
             "events",
@@ -3383,6 +3384,8 @@ fn every_paged_query_is_planned_as_a_seek() {
                 &2000_i64,
                 &top,
                 &crate::inspect::COUNTER_CEILING,
+                &turn_ceiling,
+                &crate::inspect::TIMEOUT_CEILING,
             ],
             "rowid<?",
         ),
@@ -9658,4 +9661,127 @@ async fn a_daemon_refuses_to_start_over_a_running_row_it_cannot_read() {
         message.contains("ffffffff-1111-2222-3333-444444444444"),
         "and which row it found it in: {message}"
     );
+}
+
+/// A goal is listed only when the WHOLE document reads as a task.
+///
+/// The listing projects `$.goal` on its own, so a document that answers that
+/// projection shows a goal. The single status deserialises the whole
+/// document, and refuses it entire. One row then had a task in `list` and
+/// `<unreadable task>` in `status`.
+///
+/// Measured before the fix, for each document below: the listing showed the
+/// goal and the status refused the document. The two now answer alike.
+///
+/// The last two rows are the other end of the rule. An undeclared key is
+/// ignored by the reader, which never decodes its value. Neither an extra
+/// field nor a broken escape inside one stops the document from reading. A
+/// listing that refused those would hide a session the status shows.
+#[test]
+fn a_listed_goal_is_shown_only_when_the_whole_task_reads() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let db = dir.path().join("tasks.db");
+    let writer = rusqlite::Connection::open(&db).expect("the database opens");
+    fixture_table(&writer);
+    let cases: [(&str, &str, bool); 9] = [
+        (
+            "repeated",
+            r#"{"goal":"first","goal":"second","max_turns":4,
+                "approval_timeout_secs":300,"workspace":"/tmp/w","model":"offline"}"#,
+            false,
+        ),
+        (
+            "missing",
+            r#"{"goal":"do it","approval_timeout_secs":300,
+                "workspace":"/tmp/w","model":"offline"}"#,
+            false,
+        ),
+        (
+            "wrong-type",
+            r#"{"goal":"do it","max_turns":"eight","approval_timeout_secs":300,
+                "workspace":"/tmp/w","model":"offline"}"#,
+            false,
+        ),
+        (
+            "negative",
+            r#"{"goal":"do it","max_turns":-1,"approval_timeout_secs":300,
+                "workspace":"/tmp/w","model":"offline"}"#,
+            false,
+        ),
+        (
+            "over-u32",
+            r#"{"goal":"do it","max_turns":4294967296,"approval_timeout_secs":300,
+                "workspace":"/tmp/w","model":"offline"}"#,
+            false,
+        ),
+        (
+            "no-character",
+            r#"{"goal":"do it","max_turns":4,"approval_timeout_secs":300,
+                "workspace":"\ud800","model":"offline"}"#,
+            false,
+        ),
+        (
+            "extra-key",
+            r#"{"goal":"do it","note":"fine","max_turns":4,
+                "approval_timeout_secs":300,"workspace":"/tmp/w","model":"offline"}"#,
+            true,
+        ),
+        (
+            "extra-key-broken",
+            r#"{"goal":"do it","note":"\ud800","max_turns":4,
+                "approval_timeout_secs":300,"workspace":"/tmp/w","model":"offline"}"#,
+            true,
+        ),
+        ("whole", READABLE_TASK, true),
+    ];
+    for (exec, document, _) in cases {
+        record_task(&writer, exec, document);
+    }
+    drop(writer);
+
+    let reader = inspect::open(&db).expect("the reader opens");
+    let listed = inspect::executions(&reader, WORKFLOW_NAME, None).expect("the listing answers");
+    let (views, _, _) = daemon::sessions(&reader, &daemon::Parked::new(), false, None)
+        .expect("the listing renders");
+
+    for (exec, document, reads) in cases {
+        let row = listed_row(&listed, exec);
+        let shown = views
+            .iter()
+            .find(|view| view.execution_id == exec)
+            .expect("the session is listed")
+            .goal
+            .clone();
+        // The single status reads the whole document. This is the reader it
+        // uses, so the two cannot drift apart in the test either.
+        let status = daemon::task_goal(document);
+
+        assert_eq!(
+            status.is_some(),
+            reads,
+            "[{exec}] the fixture must be the document this case means"
+        );
+        assert_eq!(
+            row.task_is_damaged, !reads,
+            "[{exec}] the listing must reach the same verdict as the status"
+        );
+        if reads {
+            assert_eq!(
+                Some(shown.clone()),
+                status,
+                "[{exec}] a whole task shows the same goal in both"
+            );
+        } else {
+            // The projection still answers. The refusal is the whole-document
+            // test, and not a goal the query failed to read.
+            assert!(
+                row.goal.is_some(),
+                "[{exec}] the goal still projects on its own: {row:?}"
+            );
+            assert_eq!(
+                shown, "<unreadable task>",
+                "[{exec}] and the listing refuses it as the status does"
+            );
+        }
+    }
 }
