@@ -20,9 +20,9 @@ per-shard cursor that advances only on acknowledgement.
   sequence is assigned, no cursor row is created, and the scanner returns
   before issuing a single query. Insert behavior is the exception:
   `harvest_audit_log_unexported_idx` is a partial index on `export_seq IS
-  NULL`, and an unconfigured deployment leaves every row `NULL` forever — so
-  the index matches the whole audit table, and every audit insert pays its
-  maintenance cost. Bounded by the retention window, not unbounded, but real.
+  NULL`. An unconfigured deployment leaves every row `NULL` forever, so the
+  index matches the whole audit table. Every audit insert then pays its
+  maintenance cost, bounded by the retention window rather than unbounded.
   Tracked as issue #1272.
 - **It never touches workflow history.** No new `WorkflowEvent` variant, no
   replay-determinism impact. Audit rows are operational metadata; the exporter

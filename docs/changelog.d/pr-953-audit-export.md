@@ -43,10 +43,10 @@ Harvest now streams them off-box.
   would be a silent compliance gap — gone from the database *and* absent from
   the SIEM. When no sink is configured the guard finds nothing and the purge is
   unchanged.
-- **Opt-in, but not zero-cost when unconfigured**: no sink registered means no
-  sequence assigned, no cursor row, and the scanner returns before issuing a
-  query. The partial index still matches every row and costs insert-time
-  maintenance regardless of configuration (issue #1272). **No new
+- **Opt-in, but one cost is not zero**: no sink configured means no sequence
+  assigned, no cursor row, and the scanner returns before issuing a query. The
+  partial index still matches every row and costs insert-time maintenance
+  regardless of configuration. Tracked as issue #1272. **No new
   `WorkflowEvent` variant, zero replay-determinism impact.**
 
 New migration: `20260728000000_harvest_audit_export`. See

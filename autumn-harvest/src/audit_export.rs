@@ -477,7 +477,9 @@ pub const fn resolve_rewind(current_acked: i64, requested: i64) -> RewindOutcome
 /// startup.
 ///
 /// With `sink` and `webhook_url` both `None` — the default — audit export is
-/// never installed and the feature is entirely inert (AC8).
+/// never installed and the scanner is entirely inert (AC8). The partial
+/// index still costs insert-time maintenance; see the module-level caveat
+/// above (issue #1272).
 #[derive(Clone)]
 pub struct AuditExportBuilderConfig {
     /// Allowed sink hosts. Required (non-empty) for a `webhook_url` to
