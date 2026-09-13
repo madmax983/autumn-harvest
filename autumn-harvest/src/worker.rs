@@ -28676,31 +28676,55 @@ pub async fn reset_timed_out_workflow_task(pool: &DbPool, task_id: uuid::Uuid, w
     //
     // Issue #1459 traced a real stuck row to this exact budget. The earlier
     // four-attempt, 2.7-second schedule exhausted during a CI-runner
-    // contention burst that cleared a few seconds later. Eight attempts
-    // over about sixteen seconds give a transient burst far longer to
-    // clear. This path still gives up and logs the row as stuck if that
-    // budget runs out.
+    // contention burst that cleared a few seconds later.
+    //
+    // Codex review (PR #1517) found the first widening attempt still did not
+    // help the saturation case this comment describes. Harvest configures no
+    // deadpool `Timeouts` (see `shard_acquire_bound`'s own doc comment), so a
+    // saturated pool makes a bare `pool.get().await` wait forever rather than
+    // return `Err`. A retry loop around an unbounded wait like that never
+    // reruns -- the first attempt simply never returns. Each attempt below
+    // is now itself bounded by `RESET_ACQUIRE_ATTEMPT_BOUND`. A checkout
+    // that cannot complete counts as one failed attempt. The loop then
+    // moves to the next backoff step instead of parking here forever.
+    // Combined with the seven-attempt schedule, this bounds the whole
+    // reset to roughly thirty seconds worst case. That is long enough for
+    // the transient contention burst on record to clear, but no longer
+    // indefinite. This path still gives up and logs the row as stuck if
+    // that budget runs out.
+    const RESET_ACQUIRE_ATTEMPT_BOUND: Duration = Duration::from_secs(2);
     let mut conn = {
         let mut last_err = None;
-        let backoff_ms: &[u64] = &[0, 100, 250, 500, 1_000, 2_000, 4_000, 8_000];
+        let backoff_ms: &[u64] = &[0, 200, 500, 1_000, 2_000, 4_000, 8_000];
         let mut result = None;
         for &delay_ms in backoff_ms {
             if delay_ms > 0 {
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             }
-            match pool.get().await {
-                Ok(c) => {
+            match tokio::time::timeout(RESET_ACQUIRE_ATTEMPT_BOUND, pool.get()).await {
+                Ok(Ok(c)) => {
                     result = Some(c);
                     break;
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::warn!(
                         task_id = %task_id,
                         worker_id = %worker_id,
                         error = %e,
                         "workflow task timeout reset: pool unavailable, retrying"
                     );
-                    last_err = Some(e);
+                    last_err = Some(e.to_string());
+                }
+                Err(_elapsed) => {
+                    tracing::warn!(
+                        task_id = %task_id,
+                        worker_id = %worker_id,
+                        bound = ?RESET_ACQUIRE_ATTEMPT_BOUND,
+                        "workflow task timeout reset: pool checkout exceeded its bound, retrying"
+                    );
+                    last_err = Some(format!(
+                        "pool acquisition exceeded {RESET_ACQUIRE_ATTEMPT_BOUND:?}"
+                    ));
                 }
             }
         }
