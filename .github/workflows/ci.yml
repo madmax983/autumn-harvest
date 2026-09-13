@@ -255,6 +255,13 @@ jobs:
         run: cargo clippy -p autumn-harvest-cli --all-targets -- -D warnings
       - name: Clippy autumn-harvest-sqlite
         run: cargo clippy -p autumn-harvest-sqlite --all-targets -- -D warnings
+      # Same issue #962 rule as the verify and redis crates below: a new
+      # workspace member gets NO clippy coverage without its own step here.
+      # `--no-deps` scopes the deny to the example, because it depends on
+      # `autumn-harvest` with `default-features = false`, and the core crate
+      # carries pre-existing warnings in that configuration.
+      - name: Clippy claude-agent-daemon example
+        run: cargo clippy -p claude-agent-daemon --all-targets --no-deps -- -D warnings
       # Issue #1312: the Redis dispatch channel. Same issue #962 rule as the
       # verify crate below -- a workspace member gets NO clippy coverage
       # without its own step here.
@@ -708,6 +715,12 @@ jobs:
       - name: Run autumn-harvest-sqlite tests (issue #1068)
         if: needs.changes.outputs.code == 'true' && matrix.shard == 3
         run: cargo test -p autumn-harvest-sqlite
+      # The agent-daemon example's suite is offline: a scripted stub model, no
+      # API key, and no network. Linux only, because the daemon's control
+      # surface is a Unix domain socket.
+      - name: Run claude-agent-daemon example tests
+        if: runner.os == 'Linux' && needs.changes.outputs.code == 'true' && matrix.shard == 3
+        run: cargo test -p claude-agent-daemon
       # Issue #1312. `--lib` only: the crate's integration suites need a live
       # Redis (and, for the end-to-end suite, a live Postgres), so they run on
       # the Docker-backed `test-db-linux` job through the manifest instead.

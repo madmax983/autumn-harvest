@@ -114,7 +114,10 @@ Out of scope for this backend (tracked as issue #1068 follow-ups):
 - **Docs guide:** [`docs/sqlite-backend.md`](../docs/sqlite-backend.md) — a
   task-oriented walkthrough of the whole surface.
 - **Runnable examples:** [`examples/quickstart.rs`](examples/quickstart.rs) and
-  [`examples/durability.rs`](examples/durability.rs).
+  [`examples/durability.rs`](examples/durability.rs). For a whole application on
+  this backend, see
+  [`examples/claude-agent-daemon/`](../examples/claude-agent-daemon/) — a local
+  daemon that runs Claude agent sessions as durable workflows.
 - **API reference:** `cargo doc --open -p autumn-harvest-sqlite` — the
   crate-level docs are the canonical design/contract document.
 - **Why this crate exists (and why it is not a core trait):**

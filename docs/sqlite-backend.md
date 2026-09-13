@@ -409,5 +409,17 @@ gate no control flow): `ctx.set_current_details(...)` and a re-park
   cargo run -p autumn-harvest-sqlite --example durability
   ```
 
+- **[`examples/claude-agent-daemon/`](../examples/claude-agent-daemon/)** — a
+  whole application on this backend: a local daemon that runs Claude agent
+  sessions as durable workflows. It shows the drive loop
+  ([§7](#7-the-drive-model)), pull signals with a deadline
+  ([§8](#8-signals-pull-only)), and crash recovery
+  ([§9](#9-durability-and-crash-recovery)) in one place, and it runs with no API
+  key against a scripted offline model.
+
+  ```text
+  cargo run -p claude-agent-daemon -- serve --workspace /tmp/agent-demo
+  ```
+
 For the full API/contract reference, run
 `cargo doc --open -p autumn-harvest-sqlite`.

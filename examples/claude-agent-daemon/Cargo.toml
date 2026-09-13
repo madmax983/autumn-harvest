@@ -1,0 +1,36 @@
+[package]
+name = "claude-agent-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "agentd"
+path = "src/main.rs"
+
+[dependencies]
+# The backend-neutral determinism core only: no Diesel, no Postgres.
+autumn-harvest = { version = "0.6.0", path = "../../autumn-harvest", default-features = false }
+autumn-harvest-sqlite = { version = "0.6.0", path = "../../autumn-harvest-sqlite" }
+clap = { version = "4.5", features = ["derive", "env"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# `flock` for the per-database daemon lock. The kernel releases the lock when
+# the holder dies, so a crashed daemon strands nothing.
+rustix = { version = "1", features = ["fs", "process"] }
+# A second, READ-ONLY connection for the inspector queries the runtime does not
+# expose. The version matches the one the backend links, so there is one SQLite.
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+# `mkfifo`, to build the special-file the toolbox must refuse.
+libc = "0.2"
+tempfile = "3"
+
+[lints]
+workspace = true

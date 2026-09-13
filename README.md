@@ -72,6 +72,11 @@ Need a real reference instead of the tiny hello-world path? See:
   child workflows, version gates, signals, timers, deterministic side effects, and scheduled DAGs.
 - [`examples/standalone-runner/`](examples/standalone-runner/) for the out-of-the-box runner path:
   no Autumn plugin, just `HarvestRunner` plus a manually mounted management API router.
+- [`examples/claude-agent-daemon/`](examples/claude-agent-daemon/) for a local daemon that runs
+  Claude agent sessions as durable workflows on the embedded SQLite backend — no Postgres, no
+  Docker. Each model call and tool call is an activity, a workspace write parks on an
+  approval signal with a deadline, and killing the daemon mid-session resumes by replay instead
+  of paying for completed turns twice. It runs with no API key (a scripted offline model).
 
 ```rust
 use autumn_harvest::prelude::*;
