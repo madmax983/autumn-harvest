@@ -75,9 +75,9 @@ pub const STOP_TRANSCRIPT_FULL: &str = "transcript_full";
 /// It reads no clock and no state outside its argument, and the cap is a
 /// constant of the build.
 fn over_input_cap(request: &TurnRequest) -> bool {
-    serde_json::to_vec(request)
-        .map(|json| json.len() as u64 > autumn_harvest::builder::DEFAULT_MAX_ACTIVITY_INPUT_BYTES)
-        .unwrap_or(false)
+    serde_json::to_vec(request).is_ok_and(|json| {
+        json.len() as u64 > autumn_harvest::builder::DEFAULT_MAX_ACTIVITY_INPUT_BYTES
+    })
 }
 
 /// The instructions the model runs under. The value is part of every request,
