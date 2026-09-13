@@ -2178,6 +2178,145 @@ pub async fn fire_due_audit_exports(
     Ok(total)
 }
 
+// ---------------------------------------------------------------------
+// M8: a dedicated per-shard export task (issue #1269)
+// ---------------------------------------------------------------------
+
+/// Run one shard's audit-export tick.
+///
+/// Reads the process-wide config. Returns `Ok(0)` before any query when no
+/// sink is configured (AC8). Otherwise claims and delivers one due batch.
+///
+/// # Errors
+/// Returns `HarvestError` on a database failure. A sink transport failure is
+/// never an `Err` here — see [`fire_due_audit_exports`].
+#[cfg(feature = "db")]
+pub async fn export_due_audit_batch(
+    conn: &mut diesel_async::AsyncPgConnection,
+    shard_id: i32,
+    metrics: &(dyn crate::telemetry::MetricsRecorder + Send + Sync),
+) -> crate::error::HarvestResult<usize> {
+    let Some(config) = read_global_audit_export_config() else {
+        return Ok(0);
+    };
+    export_once_on_conn(conn, &config, shard_id, metrics).await
+}
+
+/// Spawn a dedicated background task that exports one shard's due audit
+/// batches on its own cadence (issue #1269).
+///
+/// [`fire_due_audit_exports`] used to run inline inside
+/// `crate::timeout::enforce_timeouts_once`, sharing that loop's connection
+/// and cadence. A slow or unresponsive sink then delayed every other
+/// resident of that loop. Timeout enforcement, SLA checks, and session
+/// cleanup all waited, for up to one claim lease. Worse, on a shard pool
+/// sized for one connection, the export call's own connection request
+/// competed with the checker's already-held connection. It could never
+/// succeed.
+///
+/// This task owns its connection lifecycle end to end. It never runs nested
+/// inside another resident's checkout. A slow sink now delays nothing but
+/// this task's own next tick. A `max_size(1)` shard pool works too: this
+/// task and the timeout checker take the one connection in turn. Neither
+/// one ever needs a second connection while still holding the first.
+///
+/// Registers under [`crate::scanner_health::Scanner::AuditExport`], so a
+/// wedged export task is visible to `scanner_liveness`, exactly like the
+/// timeout checker and the poison-pill reclaimer.
+///
+/// Pass `shard` to attribute this instance to one shard in the liveness
+/// snapshot, mirroring
+/// [`crate::timeout::spawn_timeout_checker_for_shard`]. `sharded_pool`
+/// resolves the shard actually stamped on exported records when `shard` is
+/// `None` (the unsharded fallback). This is the same rule
+/// [`fire_due_audit_exports`] applies in its own unsharded arm.
+#[must_use]
+#[cfg(feature = "db")]
+pub fn spawn_audit_export_checker_for_shard(
+    pool: crate::worker::DbPool,
+    cancel: tokio_util::sync::CancellationToken,
+    interval: std::time::Duration,
+    telemetry: std::sync::Arc<crate::telemetry::TelemetryConfig>,
+    shard: Option<crate::types::ShardId>,
+    sharded_pool: Option<&crate::shard::ShardedDbPool>,
+) -> tokio::task::JoinHandle<()> {
+    // Issue #797: declare the loop before its first iteration so the
+    // `scanner_liveness` check expects it and grants it boot grace.
+    let owner = crate::scanner_health::register_scanner_for_shard(
+        &*telemetry.metrics,
+        crate::scanner_health::Scanner::AuditExport,
+        interval,
+        shard,
+    );
+    let shard_id = shard.map_or_else(
+        || sharded_pool.map_or(0, |sp| sp.default_shard().as_i32()),
+        crate::types::ShardId::as_i32,
+    );
+    let shard_u16 = u16::try_from(shard_id).unwrap_or(u16::MAX);
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = cancel.cancelled() => break,
+                () = tokio::time::sleep(interval) => {}
+            }
+
+            // A cheap config check before spending a connection checkout: an
+            // unconfigured deployment must still pay nothing per tick (AC8).
+            if is_configured() {
+                // Bounded, never a bare `pool.get()` — see `SHARD_ACQUIRE_BOUND`.
+                match tokio::time::timeout(SHARD_ACQUIRE_BOUND, pool.get()).await {
+                    Ok(Ok(mut conn)) => {
+                        if let Err(error) =
+                            export_due_audit_batch(&mut conn, shard_id, &*telemetry.metrics).await
+                        {
+                            tracing::error!(
+                                shard = shard_id,
+                                error = %error,
+                                "[audit_export] scheduled export tick failed"
+                            );
+                            telemetry
+                                .metrics
+                                .record_audit_export_observed(shard_u16, false);
+                        }
+                    }
+                    Ok(Err(error)) => {
+                        tracing::error!(
+                            shard = shard_id,
+                            error = %error,
+                            "[audit_export] failed to acquire a connection for the export tick"
+                        );
+                        telemetry
+                            .metrics
+                            .record_audit_export_observed(shard_u16, false);
+                    }
+                    Err(_elapsed) => {
+                        tracing::error!(
+                            shard = shard_id,
+                            bound = ?SHARD_ACQUIRE_BOUND,
+                            "[audit_export] timed out acquiring a connection for the export \
+                             tick; skipping it for one cycle"
+                        );
+                        telemetry
+                            .metrics
+                            .record_audit_export_observed(shard_u16, false);
+                    }
+                }
+            }
+
+            // Issue #797: unconditional end-of-iteration liveness tick, same
+            // as every other spawned scanner loop.
+            crate::scanner_health::record_scanner_tick(&*telemetry.metrics, owner);
+            if cancel.is_cancelled() {
+                break;
+            }
+        }
+        // Issue #797: a graceful stop retires this loop from the expected
+        // scanner set. A panic unwinds past this point, so a panicked loop
+        // stays registered and correctly ages into `Wedged`.
+        crate::scanner_health::deregister_scanner(owner);
+    })
+}
+
 // ── Unit tests (pure, no DB) ─────────────────────────────────────────────────
 
 #[cfg(test)]

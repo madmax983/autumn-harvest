@@ -3100,19 +3100,21 @@ because the exporter cannot currently reach this shard to advance it.
    acquiring a connection for this shard` at `tracing::error!` level; search
    the worker logs for the shard id around the alert's firing window.
 3. Confirm the shard's own database is reachable from the worker: the audit
-   exporter uses the same `ShardedDbPool` as every other per-shard resident
-   of `enforce_timeouts_once`, so a shard unreachable here is usually
-   unreachable for claim/timeout processing too.
-4. Check the shard's connection pool size. A pool with `max_size` of `1`
-   cannot yield a second connection while the scanner already holds the
-   first; see `SHARD_ACQUIRE_BOUND` in `audit_export.rs`.
+   exporter (issue #1269: its own dedicated task, one per assigned shard)
+   uses the same `ShardedDbPool` as every other per-shard scanner, so a
+   shard unreachable here is usually unreachable for claim/timeout
+   processing too.
+4. Check the shard's connection pool size. The export task and the timeout
+   checker each take a connection in turn, so a `max_size` of `1` works, but
+   heavy contention on an undersized pool can still exceed
+   `SHARD_ACQUIRE_BOUND` (in `audit_export.rs`) and skip a tick.
 
 ### Likely causes
 
 - The shard's database is down, unreachable over the network, or rejecting
   new connections.
 - The shard's connection pool is undersized for the number of per-shard
-  scanner residents sharing it.
+  scanner tasks sharing it.
 - The shard is assigned to this worker but was never given a pool entry — a
   configuration mismatch between `shard_assignments` and the
   `ShardedDbPool`.

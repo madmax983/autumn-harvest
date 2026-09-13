@@ -225,8 +225,12 @@ call outlived its lease â€” and whose batch a later claim already re-delivered â
 cannot apply a stale outcome over a fresher one, and a redrive that lands
 mid-flight cannot be silently undone.
 
-The exporter rides the existing background-scanner cadence
-(`enforce_timeouts_once`); it spawns no task of its own.
+The exporter runs on its own dedicated task, one per assigned shard
+(`spawn_audit_export_checker_for_shard`, issue #1269). It previously rode
+`enforce_timeouts_once`'s cadence and connection; splitting it out means a
+slow or unresponsive sink delays nothing but its own next tick, and no
+longer competes with the timeout checker for a second connection on a
+one-connection shard pool.
 
 ### Retention interaction
 
