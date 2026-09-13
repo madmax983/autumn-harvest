@@ -905,7 +905,7 @@ pub async fn ensure_cursor_row(
     //
     // 1. The row is retired rather than deleted ([`decommission_cursor`]), so
     //    `last_assigned_seq` survives even when retention later purges every
-    //    stamped row (issue #953, Codex review round 7 P1).
+    //    stamped row (issue #953).
     // 2. The INSERT arm still seeds from `MAX(export_seq)` rather than 0, for
     //    the paths where the row genuinely went missing anyway: a manual
     //    DELETE, a partial restore (round 4 P1). Restarting at 0 there would
@@ -1108,17 +1108,18 @@ pub async fn reactivate_cursor(
 
 /// [`reactivate_cursor`] without the surrounding transaction.
 ///
-/// The **explicit reactivate step** for audit export (issue #1273). Resumes a
-/// shard [`decommission_cursor_locked`] retired, from the preserved
-/// `last_assigned_seq`, so new records continue the sequence instead of
-/// re-issuing numbers a receiver already holds against different records.
+/// The **explicit reactivate step** for audit export (issue #1273). It
+/// resumes a shard [`decommission_cursor_locked`] retired, from the
+/// preserved `last_assigned_seq`. New records continue the sequence, rather
+/// than re-issuing numbers a receiver already holds against different
+/// records.
 ///
 /// This used to happen as a side effect of [`ensure_cursor_row`]: the next
 /// scanner tick after a re-enable un-retired the row on its own. That made
-/// resumption racy and silent — a scanner tick already under way when an
-/// operator retired a shard could un-retire it moments later, with no record
-/// of who asked for either transition. Reactivation is now its own operator
-/// action, audited exactly like [`decommission_cursor_locked`].
+/// resumption racy and silent. A scanner tick already under way when an
+/// operator retired a shard could un-retire it moments later. Neither
+/// transition left a record of who asked for it. Reactivation is now its
+/// own operator action, audited exactly like [`decommission_cursor_locked`].
 ///
 /// **Must be called inside a transaction.** On an autocommit connection the
 /// row lock below is released before the caller can pair it with anything.
@@ -1154,9 +1155,9 @@ pub async fn reactivate_cursor_locked(
 
     // Bumps `claim_epoch` for the same reason decommission does: every
     // lifecycle transition invalidates a delivery attempt claimed under an
-    // older one. No claim can be outstanding on a retired row today (a
-    // retired cursor is not claimable), so this guards a future change to
-    // that rule rather than a live hazard.
+    // older one. No claim can be outstanding on a retired row today, since
+    // a retired cursor is not claimable. So this guards a future change to
+    // that rule, not a live hazard.
     diesel::update(cur::harvest_audit_export_cursor.find(shard_id))
         .set((
             cur::retired_at.eq(None::<DateTime<Utc>>),
@@ -1225,17 +1226,18 @@ pub async fn claim_shard(
                 return Ok(None);
             };
 
-            // A retired cursor is inert (issue #953, Codex review round 14
-            // P2; issue #1273). `export_once_on_conn` calls `ensure_cursor_row`
-            // first, but that call never un-retires a row (issue #1273), so a
-            // decommissioned shard reaches this check on every tick, not just
-            // in a narrow race window. A decommission that commits between
-            // `ensure_cursor_row` and this locked read hits the same check:
-            // without it, the scanner would take a NEW claim and deliver a
-            // batch after the retirement. Bumping the epoch on retirement only
-            // invalidates claims taken *before* it, so this is the other half
-            // of that fix -- and it matters because retention is permitted to
-            // purge the shard's records the moment it is retired.
+            // A retired cursor is inert (issue #953; issue #1273).
+            // `export_once_on_conn` calls `ensure_cursor_row` first. That
+            // call never un-retires a row. So a decommissioned shard reaches
+            // this check on every tick, not just in a narrow race window.
+            //
+            // A decommission that commits between `ensure_cursor_row` and
+            // this locked read hits the same check. Without it, the scanner
+            // would take a new claim and deliver a batch after the
+            // retirement. Bumping the epoch on retirement only invalidates
+            // claims taken *before* it. So this is the other half of that
+            // fix. It matters because retention may purge the shard's
+            // records the moment it is retired.
             if cursor.retired_at.is_some() {
                 return Ok(None);
             }

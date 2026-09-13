@@ -37490,19 +37490,19 @@ struct AuditExportShardRequest {
 ///
 /// This is the audited front door for what `audit_export::decommission_cursor`
 /// used to be a bare library call for. Retirement discards the compliance
-/// guarantee over any record the shard has not yet shipped, so an auditor
-/// must be able to name who authorised that — this route makes the action
+/// guarantee over any record the shard has not yet shipped. An auditor must
+/// be able to name who authorised that. This route makes the action
 /// admin-gated and audited, exactly like [`audit_export_redrive_handler`].
 ///
 /// **The retirement and its audit record are one transaction on one
 /// connection**, on the *target shard's* connection. Same reasons as the
 /// redrive route: a second connection's insert would commit independently
-/// (breaking atomicity), and a second connection from the default pool while
-/// holding one from the target's can self-deadlock when the target IS the
-/// default shard.
+/// (breaking atomicity). Also, a second connection from the default pool,
+/// while holding one from the target's, can self-deadlock when the target
+/// IS the default shard.
 ///
 /// A shard already retired, or never configured, changes nothing but is
-/// still audited — an auditor needs the record of the request, not only of
+/// still audited. An auditor needs the record of the request, not only of
 /// requests that had an effect.
 #[allow(clippy::too_many_lines)] // one mutation + its bound audit write
 async fn audit_export_decommission_handler(
@@ -37649,12 +37649,12 @@ async fn audit_export_decommission_handler(
 /// (issue #1273).
 ///
 /// The inverse of [`audit_export_decommission_handler`], audited the same
-/// way. Resuming export used to be an implicit side effect of the exporter's
-/// next scanner tick, which raced a concurrent decommission (issue #1273
-/// finding 1) and left no record of who decided to resume it (finding 2).
-/// This route replaces both: `ensure_cursor_row` no longer reactivates a
-/// retired cursor under any circumstance, so this is now the only path back
-/// from `RETIRED` to live.
+/// way. Resuming export used to be an implicit side effect of the
+/// exporter's next scanner tick. That raced a concurrent decommission
+/// (issue #1273 finding 1) and left no record of who decided to resume it
+/// (finding 2). This route replaces both: `ensure_cursor_row` no longer
+/// reactivates a retired cursor under any circumstance. So this is now the
+/// only path back from `RETIRED` to live.
 #[allow(clippy::too_many_lines)] // one mutation + its bound audit write
 async fn audit_export_reactivate_handler(
     headers: axum::http::HeaderMap,

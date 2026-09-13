@@ -1858,8 +1858,8 @@ async fn eris_require_auth_blocks_audit_export_redrive() {
 }
 
 // Issue #1273: decommission and reactivate mutate the same compliance
-// cursor as redrive (one retires it, discarding the compliance guarantee
-// over unshipped records; the other resumes it) and must sit behind the
+// cursor as redrive. One retires it, discarding the compliance guarantee
+// over unshipped records; the other resumes it. Both must sit behind the
 // same auth gate.
 
 #[tokio::test]

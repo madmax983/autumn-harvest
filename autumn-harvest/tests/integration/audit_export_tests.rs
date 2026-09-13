@@ -2112,9 +2112,9 @@ async fn a_recreated_cursor_continues_the_sequence_it_left_off_at() {
         .await
         .expect("decommission");
 
-    // Later, an operator explicitly reactivates the shard (issue #1273: this
-    // no longer happens as a side effect of the next scanner tick), and new
-    // audited operations arrive.
+    // Later, an operator explicitly reactivates the shard. Issue #1273: this
+    // no longer happens as a side effect of the next scanner tick. New
+    // audited operations arrive after that.
     autumn_harvest::audit_export::reactivate_cursor(&mut conn, 0, chrono::Utc::now())
         .await
         .expect("reactivate");
@@ -2402,9 +2402,9 @@ async fn a_failed_audit_write_rolls_the_rewind_back() {
 // `ensure_cursor_row`'s ON CONFLICT arm used to clear `retired_at`
 // unconditionally, so any scanner tick reaching it after a decommission
 // silently undid the decommission. The two tests below pin the fix at both
-// the unit level (a bare `ensure_cursor_row` call) and the integration level
-// (a full scanner tick), so a regression that only shows up in one of the two
-// call shapes is still caught.
+// the unit level (a bare `ensure_cursor_row` call) and the integration
+// level (a full scanner tick). That way, a regression in only one of the
+// two call shapes is still caught.
 
 #[tokio::test]
 async fn ensure_cursor_row_never_revives_a_retired_cursor() {
@@ -2454,9 +2454,9 @@ async fn a_scanner_tick_after_decommission_does_not_revive_the_cursor() {
         .expect("decommission");
 
     // Reproduces the race named in issue #1273: a scanner tick that runs
-    // AFTER the decommission commits, exactly like a tick already in flight
-    // when the operator retired the shard. It must not export anything and
-    // must not un-retire the row.
+    // AFTER the decommission commits. This is exactly like a tick already
+    // in flight when the operator retired the shard. It must not export
+    // anything and must not un-retire the row.
     insert_audit_rows(&mut conn, 3).await;
     fire_due_audit_exports(&mut conn, &None, &[], &NoOpMetrics)
         .await
@@ -2480,8 +2480,8 @@ async fn a_scanner_tick_after_decommission_does_not_revive_the_cursor() {
 //
 // Mirrors `a_redrive_and_its_audit_record_land_together_on_the_target_shard`:
 // the handler runs the mutation and the audit insert in ONE transaction on
-// the target shard's connection (exercised end to end by the auth-boundary
-// and contract suites); these tests reproduce that shape and assert the
+// the target shard's connection. The auth-boundary and contract suites
+// exercise that end to end; these tests reproduce the shape and assert the
 // pairing for the two new operations.
 
 #[tokio::test]

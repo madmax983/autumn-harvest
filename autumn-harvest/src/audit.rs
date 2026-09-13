@@ -133,9 +133,9 @@ pub const OP_AUDIT_EXPORT_DECOMMISSION: &str = "audit_export.decommission";
 /// (issue #1273).
 ///
 /// The inverse of [`OP_AUDIT_EXPORT_DECOMMISSION`]. Resuming export used to
-/// be an implicit side effect of the exporter's next scanner tick; it is now
-/// its own explicit, audited operator action, for the same reason retirement
-/// is: an auditor must be able to name who decided to resume it.
+/// be an implicit side effect of the exporter's next scanner tick. It is now
+/// its own explicit, audited operator action, for the same reason
+/// retirement is: an auditor must name who decided to resume it.
 pub const OP_AUDIT_EXPORT_REACTIVATE: &str = "audit_export.reactivate";
 /// Audit operation: Set (or updated) a TTL'd runtime pacing override on a
 /// declared workflow-start throttle (issue #945).
