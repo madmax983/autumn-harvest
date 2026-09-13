@@ -130,8 +130,8 @@ fn changelog_fragment_names_the_index_cost() {
 /// presence of both is the property worth pinning here.
 #[test]
 fn migration_header_already_names_the_index_cost() {
-    let path = repo_root()
-        .join("autumn-harvest/migrations/20260728000000_harvest_audit_export/up.sql");
+    let path =
+        repo_root().join("autumn-harvest/migrations/20260728000000_harvest_audit_export/up.sql");
     let text = read_normalized(&path);
     assert!(
         text.contains("harvest_audit_log_unexported_idx") && text.contains("1272"),
