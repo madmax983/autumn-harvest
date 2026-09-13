@@ -274,15 +274,20 @@ pub(crate) struct WorkflowListParams {
 
 #[derive(Debug, Deserialize, Default)]
 pub(crate) struct WorkflowDetailParams {
-    /// Zero-based page index for the event timeline.
+    /// Zero-based page index for the event timeline. Raw submitted text, not
+    /// `i64`. A malformed value must reach the handler as text. It then
+    /// falls back to page zero with a flash message. It must not abort the
+    /// whole page at the `Query` extractor. See
+    /// `parse_event_page_query_field`.
     #[serde(default)]
-    event_page: Option<i64>,
+    event_page: Option<String>,
     /// Flash message to display at the top of the detail page.
     #[serde(default)]
     flash: Option<String>,
-    /// Jump to the page containing this 1-based event number.
+    /// Jump to the page containing this 1-based event number. Raw submitted
+    /// text, not `i64`, for the same reason as `event_page`.
     #[serde(default)]
-    jump_event: Option<i64>,
+    jump_event: Option<String>,
     /// Level filter for the durable workflow-logs panel (issue #790):
     /// `info` | `warn` | `error`. Absent or unrecognised means "all levels".
     #[serde(default)]
@@ -1243,6 +1248,36 @@ fn parse_started_bound(
     )
 }
 
+/// Parses an event-number query field (`event_page` or `jump_event`) on the
+/// workflow detail page from its raw submitted text.
+///
+/// `WorkflowDetailParams` carries both fields as `String`, not `i64`. axum's
+/// `Query` extractor runs full struct deserialization before
+/// `workflow_detail_ui` ever executes. A field typed directly as `i64` would
+/// abort the *entire* detail page on a non-numeric value: metadata,
+/// timeline, every panel. The abort is a bare, unstyled 400, before the
+/// handler reads anything. `jump_event` has a real operator-typed
+/// `type="number"` input, the "Jump to event" control. A pasted or
+/// hand-typed non-numeric value is therefore a reachable path, not a
+/// hypothetical one. This closes the same page-abort mechanism
+/// `parse_reset_to_event_id` already closes for the "Reset to event N"
+/// action. It applies one layer earlier here: a GET page render, not a POST
+/// action.
+///
+/// Returns `Ok(None)` when the field is absent or blank, `Ok(Some(n))` on a
+/// valid whole number, and `Err(message)` on malformed text. The caller
+/// falls back to page zero and surfaces the message through the page's
+/// existing flash banner instead of aborting.
+fn parse_event_page_query_field(field: &str, raw: Option<&str>) -> Result<Option<i64>, String> {
+    let Some(trimmed) = raw.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(None);
+    };
+    trimmed
+        .parse::<i64>()
+        .map(Some)
+        .map_err(|_| format!("invalid {field} '{trimmed}'; expected a whole number"))
+}
+
 #[allow(clippy::too_many_lines)]
 async fn workflow_detail_ui(
     Extension(api_state): Extension<HarvestApiState>,
@@ -1258,13 +1293,31 @@ async fn workflow_detail_ui(
         .await
         .map_err(map_error)?;
 
-    // Resolve event_page before any DB queries so we can use OFFSET/LIMIT directly.
+    // Resolve event_page before any DB queries so we can use OFFSET/LIMIT
+    // directly. A malformed `jump_event`/`event_page` falls back to page
+    // zero with a flash message, instead of aborting the page. See
+    // `parse_event_page_query_field`.
     let page_size = DETAIL_EVENT_PAGE_SIZE;
-    let event_page = if let Some(jump) = params.jump_event {
-        let jump_zero = (jump - 1).max(0);
-        jump_zero / page_size
-    } else {
-        params.event_page.unwrap_or(0).max(0)
+    let mut page_param_error: Option<String> = None;
+    let event_page = match parse_event_page_query_field("jump_event", params.jump_event.as_deref())
+    {
+        Ok(Some(jump)) => {
+            let jump_zero = (jump - 1).max(0);
+            jump_zero / page_size
+        }
+        Ok(None) => {
+            match parse_event_page_query_field("event_page", params.event_page.as_deref()) {
+                Ok(page) => page.unwrap_or(0).max(0),
+                Err(e) => {
+                    page_param_error = Some(e);
+                    0
+                }
+            }
+        }
+        Err(e) => {
+            page_param_error = Some(e);
+            0
+        }
     };
 
     // Total event count — used for pagination controls.
@@ -1496,7 +1549,11 @@ async fn workflow_detail_ui(
         &children,
         event_page,
         &blocked_on,
-        params.flash.as_deref(),
+        // A malformed `jump_event`/`event_page` takes priority. It is the
+        // reason this exact render fell back to page zero. That is more
+        // relevant right now than a flash carried over from an earlier
+        // redirect.
+        page_param_error.as_deref().or(params.flash.as_deref()),
         continue_as_new_threshold,
         &WorkflowLogsPanelData {
             lines: &log_lines,
@@ -11355,6 +11412,65 @@ mod tests {
         assert_eq!(
             parse_started_bound(Some("   "), "started_after"),
             (None, String::new(), None)
+        );
+    }
+
+    /// GREEN — the fix under test. `event_page`/`jump_event` used to be typed
+    /// `i64` straight on `WorkflowDetailParams`, a `Query<..>` extractor
+    /// struct. A non-numeric value failed axum's own query deserialization.
+    /// That aborted the request with a bare framework 400 before
+    /// `workflow_detail_ui` ran at all. No metadata, timeline, or panel
+    /// rendered. A malformed value must instead fall back to page zero with
+    /// a flash message.
+    #[test]
+    fn parse_event_page_query_field_accepts_valid_values() {
+        assert_eq!(
+            parse_event_page_query_field("jump_event", Some("1")),
+            Ok(Some(1))
+        );
+        assert_eq!(
+            parse_event_page_query_field("event_page", Some("  42  ")),
+            Ok(Some(42))
+        );
+        assert_eq!(
+            parse_event_page_query_field("event_page", Some("0")),
+            Ok(Some(0))
+        );
+    }
+
+    #[test]
+    fn parse_event_page_query_field_rejects_non_numeric_text() {
+        let err = parse_event_page_query_field("jump_event", Some("abc"))
+            .expect_err("must reject non-numeric text");
+        assert!(
+            err.contains("jump_event") && err.contains("abc"),
+            "the error must name the field and the bad value: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_event_page_query_field_rejects_a_fraction() {
+        // A `type="number"` input's `step="1"` default blocks this in a real
+        // browser. A bare `Query` GET from any other client is still a
+        // reachable path. It must not 400 before the handler runs.
+        assert!(parse_event_page_query_field("jump_event", Some("1.5")).is_err());
+    }
+
+    #[test]
+    fn parse_event_page_query_field_rejects_i64_overflow() {
+        assert!(parse_event_page_query_field("event_page", Some("99999999999999999999")).is_err());
+    }
+
+    #[test]
+    fn parse_event_page_query_field_blank_or_missing_is_not_an_error() {
+        assert_eq!(parse_event_page_query_field("jump_event", None), Ok(None));
+        assert_eq!(
+            parse_event_page_query_field("jump_event", Some("")),
+            Ok(None)
+        );
+        assert_eq!(
+            parse_event_page_query_field("jump_event", Some("   ")),
+            Ok(None)
         );
     }
 

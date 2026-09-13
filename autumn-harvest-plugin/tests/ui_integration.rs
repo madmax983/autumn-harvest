@@ -5042,6 +5042,40 @@ async fn detail_page_has_jump_to_event_n_control() {
     );
 }
 
+/// GREEN — the fix under test. `jump_event`/`event_page` used to be typed
+/// `i64` straight on `WorkflowDetailParams`, a `Query<..>` extractor
+/// struct. A non-numeric value failed axum's own query deserialization.
+/// That aborted the request with a bare framework 400, before
+/// `workflow_detail_ui` ran at all. No metadata, timeline, or panel
+/// rendered. The fix falls back to page zero. It surfaces the bad value
+/// through the page's own flash banner instead of aborting.
+#[tokio::test]
+async fn detail_page_invalid_jump_event_renders_page_with_flash_instead_of_aborting() {
+    let (database_url, _container) = setup_test_database_url().await;
+    let exec_id =
+        insert_workflow_on_url(&database_url, ShardId::new(0), "jump_wf2", "jump-2").await;
+
+    let app = build_single_shard_ui_app(&database_url);
+    let (status, html) = fetch_html(
+        &app,
+        &format!("/workflows/{exec_id}?jump_event=not-a-number"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an invalid jump_event must still render the page, not abort it: {html}"
+    );
+    assert!(
+        html.contains("invalid jump_event") && html.contains("not-a-number"),
+        "the page must surface the bad value through its flash banner: {html}"
+    );
+    assert!(
+        html.contains(&exec_id.to_string()),
+        "the detail page's own metadata must still render: {html}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Issue #279: history event count and continue-as-new threshold on detail page
 // ---------------------------------------------------------------------------
