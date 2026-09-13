@@ -35,7 +35,8 @@ use autumn_harvest::admission_gate::{AdmissionGateView, GateScope};
 use autumn_harvest::audit::{
     self, AuditFilters, CLASSIFIED_ROUTES, HEADER_ACTOR, HEADER_IDEMPOTENCY_KEY, HEADER_REQUEST_ID,
     HEADER_SOURCE, OP_ACTIVITY_FAIL_NOW, OP_ACTIVITY_PAUSE, OP_ACTIVITY_RESUME,
-    OP_ACTIVITY_RETRY_NOW, OP_AUDIT_EXPORT_REDRIVE, OP_BATCH_SUBMIT, OP_BUILD_COMPAT_DECLARE,
+    OP_ACTIVITY_RETRY_NOW, OP_AUDIT_EXPORT_DECOMMISSION, OP_AUDIT_EXPORT_REACTIVATE,
+    OP_AUDIT_EXPORT_REDRIVE, OP_BATCH_SUBMIT, OP_BUILD_COMPAT_DECLARE,
     OP_BUILD_COMPAT_REVOKE, OP_BUILD_POLICY_SET, OP_BUILD_RAMP_CLEAR, OP_BUILD_RAMP_SET,
     OP_CALLBACK_REDRIVE, OP_CIRCUIT_FORCE_CLOSE, OP_CIRCUIT_FORCE_OPEN, OP_DAG_PATCH, OP_DAG_RETRY,
     OP_DAG_TRIGGER, OP_DLQ_DISCARD_BULK, OP_DLQ_REDRIVE, OP_DLQ_REPLAY, OP_DLQ_REPLAY_BULK,
@@ -5120,6 +5121,16 @@ pub fn harvest_api_router(api_state: HarvestApiState) -> Router<AppState> {
             "/admin/audit-export/redrive",
             post(audit_export_redrive_handler).route_layer(require_admin.clone()),
         )
+        // Retire / reactivate a shard's export cursor (issue #1273). Both
+        // mutating and audited.
+        .route(
+            "/admin/audit-export/decommission",
+            post(audit_export_decommission_handler).route_layer(require_admin.clone()),
+        )
+        .route(
+            "/admin/audit-export/reactivate",
+            post(audit_export_reactivate_handler).route_layer(require_admin.clone()),
+        )
         .route(
             "/admin/quotas",
             // Admin-gated: the response includes raw quota_key values, which
@@ -6361,6 +6372,8 @@ pub const fn management_api_routes() -> &'static [(&'static str, &'static str)] 
         // ── Audit export to a SIEM sink (issue #953) ──────────────────────
         ("GET", "/admin/audit-export"),
         ("POST", "/admin/audit-export/redrive"),
+        ("POST", "/admin/audit-export/decommission"),
+        ("POST", "/admin/audit-export/reactivate"),
         ("GET", "/admin/rate-limits"),
         ("POST", "/admin/rate-limits/{key}"),
         // ── TTL'd runtime pacing overrides (issue #945) ───────────────────
@@ -6758,6 +6771,8 @@ pub const fn management_api_request_fields()
             "/admin/audit-export/redrive",
             Some(&["shard", "to_seq", "before"]),
         ),
+        ("POST", "/admin/audit-export/decommission", Some(&["shard"])),
+        ("POST", "/admin/audit-export/reactivate", Some(&["shard"])),
         (
             "POST",
             "/admin/schedules/workflow",
@@ -7825,6 +7840,16 @@ pub const fn management_api_response_fields()
             "POST",
             "/admin/audit-export/redrive",
             Some(&["shard", "outcome", "from", "to"]),
+        ),
+        (
+            "POST",
+            "/admin/audit-export/decommission",
+            Some(&["shard", "outcome"]),
+        ),
+        (
+            "POST",
+            "/admin/audit-export/reactivate",
+            Some(&["shard", "outcome"]),
         ),
         ("GET", "/admin/rate-limits", None), // Vec<RateLimitBucketView> (declared baseline + effective/override state, issue #945)
         ("POST", "/admin/rate-limits/{key}", Some(&["ok"])),
@@ -37443,6 +37468,321 @@ async fn audit_export_redrive_handler(
                  run there or has been retired. A retired shard cannot be redriven — its \
                  records are no longer protected from retention and no exporter is \
                  running to ship them; re-enable export first",
+                request.shard
+            ))
+            .into_response()
+        }
+    }
+}
+
+/// Body of `POST /admin/audit-export/decommission` and
+/// `POST /admin/audit-export/reactivate` (issue #1273).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuditExportShardRequest {
+    /// Shard whose export cursor to retire or reactivate.
+    shard: i32,
+}
+
+/// `POST /admin/audit-export/decommission` — retire one shard's audit-export
+/// cursor, permitting retention to purge its aged records (issue #953, issue
+/// #1273).
+///
+/// This is the audited front door for what `audit_export::decommission_cursor`
+/// used to be a bare library call for. Retirement discards the compliance
+/// guarantee over any record the shard has not yet shipped, so an auditor
+/// must be able to name who authorised that — this route makes the action
+/// admin-gated and audited, exactly like [`audit_export_redrive_handler`].
+///
+/// **The retirement and its audit record are one transaction on one
+/// connection**, on the *target shard's* connection. Same reasons as the
+/// redrive route: a second connection's insert would commit independently
+/// (breaking atomicity), and a second connection from the default pool while
+/// holding one from the target's can self-deadlock when the target IS the
+/// default shard.
+///
+/// A shard already retired, or never configured, changes nothing but is
+/// still audited — an auditor needs the record of the request, not only of
+/// requests that had an effect.
+#[allow(clippy::too_many_lines)] // one mutation + its bound audit write
+async fn audit_export_decommission_handler(
+    headers: axum::http::HeaderMap,
+    Extension(api_state): Extension<HarvestApiState>,
+    Json(request): Json<AuditExportShardRequest>,
+) -> impl axum::response::IntoResponse {
+    let Ok(pool) = api_state.storage_pool() else {
+        return AutumnError::service_unavailable_msg("harvest storage pool is not configured")
+            .into_response();
+    };
+    let (actor, source, request_id) = audit_context(&headers, &api_state);
+    let route = "POST /admin/audit-export/decommission";
+    let target_label = format!("shard={}", request.shard);
+
+    let shard_pool = pool.exact_pool_for(::autumn_harvest::types::ShardId::new(request.shard));
+
+    let outcome: Result<::autumn_harvest::audit_export::DecommissionOutcome, String> =
+        match shard_pool {
+            Some(shard_pool) => match acquire_conn(shard_pool).await {
+                Ok(mut conn) => {
+                    use diesel_async::AsyncConnection as _;
+                    let actor = actor.clone();
+                    let source = source.clone();
+                    let request_id = request_id.clone();
+                    let target_label = target_label.clone();
+                    Box::pin(conn.transaction::<
+                        ::autumn_harvest::audit_export::DecommissionOutcome,
+                        ::autumn_harvest::error::HarvestError,
+                        _,
+                    >(async |conn| {
+                        let outcome = ::autumn_harvest::audit_export::decommission_cursor_locked(
+                            conn,
+                            request.shard,
+                            chrono::Utc::now(),
+                        )
+                        .await?;
+
+                        // Only a genuine retirement is a novel privileged action; an
+                        // already-retired or never-configured shard changed nothing.
+                        // Both are still recorded, exactly as a refused redrive is.
+                        let (status, detail) = match &outcome {
+                            ::autumn_harvest::audit_export::DecommissionOutcome::Retired => {
+                                (STATUS_SUCCEEDED, None)
+                            }
+                            ::autumn_harvest::audit_export::DecommissionOutcome::AlreadyRetired => {
+                                (
+                                    STATUS_SUCCEEDED,
+                                    Some("no-op: shard was already retired".to_string()),
+                                )
+                            }
+                            ::autumn_harvest::audit_export::DecommissionOutcome::NotConfigured => {
+                                (
+                                    STATUS_FAILED,
+                                    Some("refused: shard has no audit-export cursor".to_string()),
+                                )
+                            }
+                        };
+                        let ar = NewAuditRecord {
+                            actor: &actor,
+                            operation: OP_AUDIT_EXPORT_DECOMMISSION,
+                            target_type: TARGET_AUDIT_EXPORT,
+                            target_id: Some(target_label.as_str()),
+                            route_or_command: route,
+                            request_id: request_id.as_deref(),
+                            idempotency_key: None,
+                            status,
+                            error_summary: detail.as_deref(),
+                            shard_id: Some(request.shard),
+                            source: &source,
+                        };
+                        // Same `conn`, same transaction as the retirement above.
+                        audit::insert_audit(conn, &ar).await?;
+                        Ok(outcome)
+                    }))
+                    .await
+                    .map_err(|e: ::autumn_harvest::error::HarvestError| e.to_string())
+                }
+                Err(e) => Err(format!("shard {}: {e}", request.shard)),
+            },
+            None => Err(format!("shard {} is not configured", request.shard)),
+        };
+
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            // The transaction rolled back (or never opened), so nothing was
+            // applied. Record the *attempt* on the default shard, best effort.
+            let ar = NewAuditRecord {
+                actor: &actor,
+                operation: OP_AUDIT_EXPORT_DECOMMISSION,
+                target_type: TARGET_AUDIT_EXPORT,
+                target_id: Some(target_label.as_str()),
+                route_or_command: route,
+                request_id: request_id.as_deref(),
+                idempotency_key: None,
+                status: STATUS_FAILED,
+                error_summary: Some(error.as_str()),
+                shard_id: Some(request.shard),
+                source: &source,
+            };
+            if let Ok(mut conn) = acquire_conn(pool.default_pool()).await
+                && let Err(audit_err) = audit::insert_audit(&mut conn, &ar).await
+            {
+                tracing::error!(
+                    error = %audit_err,
+                    "audit insert failed for a failed audit_export.decommission"
+                );
+            }
+            tracing::error!(error = %error, "audit_export.decommission failed");
+            return AutumnError::service_unavailable_msg(error).into_response();
+        }
+    };
+
+    match outcome {
+        ::autumn_harvest::audit_export::DecommissionOutcome::Retired => (
+            axum::http::StatusCode::OK,
+            axum::Json(serde_json::json!({
+                "shard": request.shard,
+                "outcome": "retired",
+            })),
+        )
+            .into_response(),
+        ::autumn_harvest::audit_export::DecommissionOutcome::AlreadyRetired => (
+            axum::http::StatusCode::OK,
+            axum::Json(serde_json::json!({
+                "shard": request.shard,
+                "outcome": "already_retired",
+            })),
+        )
+            .into_response(),
+        ::autumn_harvest::audit_export::DecommissionOutcome::NotConfigured => {
+            AutumnError::not_found_msg(format!(
+                "shard {} has no audit-export cursor: audit export has never run there",
+                request.shard
+            ))
+            .into_response()
+        }
+    }
+}
+
+/// `POST /admin/audit-export/reactivate` — reactivate one shard's retired
+/// audit-export cursor, resuming from the preserved sequence high-water mark
+/// (issue #1273).
+///
+/// The inverse of [`audit_export_decommission_handler`], audited the same
+/// way. Resuming export used to be an implicit side effect of the exporter's
+/// next scanner tick, which raced a concurrent decommission (issue #1273
+/// finding 1) and left no record of who decided to resume it (finding 2).
+/// This route replaces both: `ensure_cursor_row` no longer reactivates a
+/// retired cursor under any circumstance, so this is now the only path back
+/// from `RETIRED` to live.
+#[allow(clippy::too_many_lines)] // one mutation + its bound audit write
+async fn audit_export_reactivate_handler(
+    headers: axum::http::HeaderMap,
+    Extension(api_state): Extension<HarvestApiState>,
+    Json(request): Json<AuditExportShardRequest>,
+) -> impl axum::response::IntoResponse {
+    let Ok(pool) = api_state.storage_pool() else {
+        return AutumnError::service_unavailable_msg("harvest storage pool is not configured")
+            .into_response();
+    };
+    let (actor, source, request_id) = audit_context(&headers, &api_state);
+    let route = "POST /admin/audit-export/reactivate";
+    let target_label = format!("shard={}", request.shard);
+
+    let shard_pool = pool.exact_pool_for(::autumn_harvest::types::ShardId::new(request.shard));
+
+    let outcome: Result<::autumn_harvest::audit_export::ReactivateOutcome, String> =
+        match shard_pool {
+            Some(shard_pool) => match acquire_conn(shard_pool).await {
+                Ok(mut conn) => {
+                    use diesel_async::AsyncConnection as _;
+                    let actor = actor.clone();
+                    let source = source.clone();
+                    let request_id = request_id.clone();
+                    let target_label = target_label.clone();
+                    Box::pin(conn.transaction::<
+                        ::autumn_harvest::audit_export::ReactivateOutcome,
+                        ::autumn_harvest::error::HarvestError,
+                        _,
+                    >(async |conn| {
+                        let outcome = ::autumn_harvest::audit_export::reactivate_cursor_locked(
+                            conn,
+                            request.shard,
+                            chrono::Utc::now(),
+                        )
+                        .await?;
+
+                        let (status, detail) = match &outcome {
+                            ::autumn_harvest::audit_export::ReactivateOutcome::Reactivated => {
+                                (STATUS_SUCCEEDED, None)
+                            }
+                            ::autumn_harvest::audit_export::ReactivateOutcome::AlreadyActive => {
+                                (
+                                    STATUS_SUCCEEDED,
+                                    Some("no-op: shard was already active".to_string()),
+                                )
+                            }
+                            ::autumn_harvest::audit_export::ReactivateOutcome::NotConfigured => {
+                                (
+                                    STATUS_FAILED,
+                                    Some("refused: shard has no audit-export cursor".to_string()),
+                                )
+                            }
+                        };
+                        let ar = NewAuditRecord {
+                            actor: &actor,
+                            operation: OP_AUDIT_EXPORT_REACTIVATE,
+                            target_type: TARGET_AUDIT_EXPORT,
+                            target_id: Some(target_label.as_str()),
+                            route_or_command: route,
+                            request_id: request_id.as_deref(),
+                            idempotency_key: None,
+                            status,
+                            error_summary: detail.as_deref(),
+                            shard_id: Some(request.shard),
+                            source: &source,
+                        };
+                        // Same `conn`, same transaction as the reactivation above.
+                        audit::insert_audit(conn, &ar).await?;
+                        Ok(outcome)
+                    }))
+                    .await
+                    .map_err(|e: ::autumn_harvest::error::HarvestError| e.to_string())
+                }
+                Err(e) => Err(format!("shard {}: {e}", request.shard)),
+            },
+            None => Err(format!("shard {} is not configured", request.shard)),
+        };
+
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let ar = NewAuditRecord {
+                actor: &actor,
+                operation: OP_AUDIT_EXPORT_REACTIVATE,
+                target_type: TARGET_AUDIT_EXPORT,
+                target_id: Some(target_label.as_str()),
+                route_or_command: route,
+                request_id: request_id.as_deref(),
+                idempotency_key: None,
+                status: STATUS_FAILED,
+                error_summary: Some(error.as_str()),
+                shard_id: Some(request.shard),
+                source: &source,
+            };
+            if let Ok(mut conn) = acquire_conn(pool.default_pool()).await
+                && let Err(audit_err) = audit::insert_audit(&mut conn, &ar).await
+            {
+                tracing::error!(
+                    error = %audit_err,
+                    "audit insert failed for a failed audit_export.reactivate"
+                );
+            }
+            tracing::error!(error = %error, "audit_export.reactivate failed");
+            return AutumnError::service_unavailable_msg(error).into_response();
+        }
+    };
+
+    match outcome {
+        ::autumn_harvest::audit_export::ReactivateOutcome::Reactivated => (
+            axum::http::StatusCode::OK,
+            axum::Json(serde_json::json!({
+                "shard": request.shard,
+                "outcome": "reactivated",
+            })),
+        )
+            .into_response(),
+        ::autumn_harvest::audit_export::ReactivateOutcome::AlreadyActive => (
+            axum::http::StatusCode::OK,
+            axum::Json(serde_json::json!({
+                "shard": request.shard,
+                "outcome": "already_active",
+            })),
+        )
+            .into_response(),
+        ::autumn_harvest::audit_export::ReactivateOutcome::NotConfigured => {
+            AutumnError::not_found_msg(format!(
+                "shard {} has no audit-export cursor: audit export has never run there",
                 request.shard
             ))
             .into_response()

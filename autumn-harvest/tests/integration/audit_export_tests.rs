@@ -46,10 +46,10 @@ use autumn_harvest::audit::{
     self, OP_WORKFLOW_CANCEL, STATUS_SUCCEEDED, TARGET_WORKFLOW, purge_old_audit_records,
 };
 use autumn_harvest::audit_export::{
-    AuditBatch, AuditExportRecord, AuditExportRuntimeConfig, AuditSink, ExportBackoff,
-    ExportOutcome, GLOBAL_AUDIT_EXPORT_CONFIG, RewindOutcome, RewindRequest, SinkAttempt,
-    SinkFuture, apply_outcome, claim_shard, classify_export_outcome, ensure_cursor_row,
-    export_status, fire_due_audit_exports, rewind_cursor, serialize_batch,
+    AuditBatch, AuditExportRecord, AuditExportRuntimeConfig, AuditSink, DecommissionOutcome,
+    ExportBackoff, ExportOutcome, GLOBAL_AUDIT_EXPORT_CONFIG, ReactivateOutcome, RewindOutcome,
+    RewindRequest, SinkAttempt, SinkFuture, apply_outcome, claim_shard, classify_export_outcome,
+    ensure_cursor_row, export_status, fire_due_audit_exports, rewind_cursor, serialize_batch,
 };
 use autumn_harvest::completion_callback::CallbackSecret;
 use autumn_harvest::models::NewAuditRecord;
@@ -1359,7 +1359,7 @@ async fn a_retired_shard_reports_no_backlog() {
         .expect("tick");
     uninstall();
 
-    autumn_harvest::audit_export::decommission_cursor(&mut conn, 0)
+    autumn_harvest::audit_export::decommission_cursor(&mut conn, 0, chrono::Utc::now())
         .await
         .expect("decommission");
 
@@ -1412,7 +1412,7 @@ async fn retiring_a_cursor_invalidates_a_delivery_already_in_flight() {
     assert_eq!(claim.records.len(), 3);
 
     // The operator retires the cursor while that delivery is outstanding.
-    autumn_harvest::audit_export::decommission_cursor(&mut conn, 0)
+    autumn_harvest::audit_export::decommission_cursor(&mut conn, 0, chrono::Utc::now())
         .await
         .expect("decommission");
 
@@ -1485,7 +1485,7 @@ async fn a_retired_cursor_cannot_be_claimed() {
     .await
     .expect("ack");
 
-    autumn_harvest::audit_export::decommission_cursor(&mut conn, 0)
+    autumn_harvest::audit_export::decommission_cursor(&mut conn, 0, chrono::Utc::now())
         .await
         .expect("decommission");
     insert_audit_rows(&mut conn, 2).await;
@@ -2034,11 +2034,12 @@ async fn retention_resumes_only_after_the_cursor_is_decommissioned() {
     );
 
     // Only an explicit decommission lifts the guard.
-    assert!(
-        autumn_harvest::audit_export::decommission_cursor(&mut conn, 0)
+    assert_eq!(
+        autumn_harvest::audit_export::decommission_cursor(&mut conn, 0, chrono::Utc::now())
             .await
             .expect("decommission"),
-        "the cursor row existed, so it must report as removed"
+        autumn_harvest::audit_export::DecommissionOutcome::Retired,
+        "the cursor row existed, so it must report as retired"
     );
     let deleted = purge_old_audit_records(&mut conn, 90)
         .await
@@ -2107,11 +2108,16 @@ async fn a_recreated_cursor_continues_the_sequence_it_left_off_at() {
     uninstall();
 
     // The operator retires export; the four stamped rows stay in the table.
-    autumn_harvest::audit_export::decommission_cursor(&mut conn, 0)
+    autumn_harvest::audit_export::decommission_cursor(&mut conn, 0, chrono::Utc::now())
         .await
         .expect("decommission");
 
-    // Later, export is re-enabled and new audited operations arrive.
+    // Later, an operator explicitly reactivates the shard (issue #1273: this
+    // no longer happens as a side effect of the next scanner tick), and new
+    // audited operations arrive.
+    autumn_harvest::audit_export::reactivate_cursor(&mut conn, 0, chrono::Utc::now())
+        .await
+        .expect("reactivate");
     let sink2 = Arc::new(RecordingSink::new(200));
     let _reinstalled = install(sink2.clone(), 100);
     insert_audit_rows(&mut conn, 2).await;
@@ -2161,7 +2167,7 @@ async fn the_sequence_survives_a_decommission_that_purges_every_stamped_row() {
 
     // Operator retires export to relieve disk pressure, exactly as the runbook
     // describes, and retention then purges the whole aged window.
-    autumn_harvest::audit_export::decommission_cursor(&mut conn, 0)
+    autumn_harvest::audit_export::decommission_cursor(&mut conn, 0, chrono::Utc::now())
         .await
         .expect("decommission");
     diesel::update(harvest_audit_log::table)
@@ -2182,7 +2188,11 @@ async fn the_sequence_survives_a_decommission_that_purges_every_stamped_row() {
         "no stamped row survives to derive a counter from"
     );
 
-    // Export is re-enabled later. The SIEM still holds records at seq 1-3.
+    // Export is re-enabled later, by an explicit operator reactivation
+    // (issue #1273). The SIEM still holds records at seq 1-3.
+    autumn_harvest::audit_export::reactivate_cursor(&mut conn, 0, chrono::Utc::now())
+        .await
+        .expect("reactivate");
     let sink2 = Arc::new(RecordingSink::new(200));
     let _reinstalled = install(sink2.clone(), 100);
     insert_audit_rows(&mut conn, 2).await;
@@ -2229,7 +2239,7 @@ async fn a_retired_shard_cannot_be_redriven() {
         RewindOutcome::Rewound { from: 3, to: 1 },
     );
 
-    autumn_harvest::audit_export::decommission_cursor(&mut conn, 0)
+    autumn_harvest::audit_export::decommission_cursor(&mut conn, 0, chrono::Utc::now())
         .await
         .expect("decommission");
 
@@ -2383,6 +2393,279 @@ async fn a_failed_audit_write_rolls_the_rewind_back() {
         3,
         "the rewind must roll back with its audit write: a cursor moved with \
          no trail is exactly what the single transaction prevents"
+    );
+}
+
+// ── Issue #1273, finding 1: a racing scanner pass must not revive a retired
+//    cursor ───────────────────────────────────────────────────────────────
+//
+// `ensure_cursor_row`'s ON CONFLICT arm used to clear `retired_at`
+// unconditionally, so any scanner tick reaching it after a decommission
+// silently undid the decommission. The two tests below pin the fix at both
+// the unit level (a bare `ensure_cursor_row` call) and the integration level
+// (a full scanner tick), so a regression that only shows up in one of the two
+// call shapes is still caught.
+
+#[tokio::test]
+async fn ensure_cursor_row_never_revives_a_retired_cursor() {
+    let _guard = TEST_SERIAL.lock().await;
+    uninstall();
+    let (mut conn, _c) = make_conn().await;
+    insert_audit_rows(&mut conn, 2).await;
+    ensure_cursor_row(&mut conn, 0).await.expect("cursor");
+
+    autumn_harvest::audit_export::decommission_cursor(&mut conn, 0, chrono::Utc::now())
+        .await
+        .expect("decommission");
+
+    // A scanner tick reaches `ensure_cursor_row` on every shard on every
+    // tick, whether or not that shard was just retired. It must be a no-op
+    // here, not a revival.
+    ensure_cursor_row(&mut conn, 0)
+        .await
+        .expect("ensure_cursor_row on a retired shard must not error");
+
+    let status = export_status(&mut conn, 0, chrono::Utc::now())
+        .await
+        .expect("status")
+        .expect("row");
+    assert_eq!(
+        status.delivery_state, "RETIRED",
+        "ensure_cursor_row must never un-retire a cursor; reactivation is an \
+         explicit operator action (reactivate_cursor), not a side effect of \
+         the exporter noticing new work"
+    );
+}
+
+#[tokio::test]
+async fn a_scanner_tick_after_decommission_does_not_revive_the_cursor() {
+    let _guard = TEST_SERIAL.lock().await;
+    let sink = Arc::new(RecordingSink::new(200));
+    let _installed = install(sink.clone(), 100);
+    let (mut conn, _c) = make_conn().await;
+    insert_audit_rows(&mut conn, 2).await;
+    fire_due_audit_exports(&mut conn, &None, &[], &NoOpMetrics)
+        .await
+        .expect("tick");
+    assert_eq!(sink.all_seqs(), vec![1, 2]);
+
+    autumn_harvest::audit_export::decommission_cursor(&mut conn, 0, chrono::Utc::now())
+        .await
+        .expect("decommission");
+
+    // Reproduces the race named in issue #1273: a scanner tick that runs
+    // AFTER the decommission commits, exactly like a tick already in flight
+    // when the operator retired the shard. It must not export anything and
+    // must not un-retire the row.
+    insert_audit_rows(&mut conn, 3).await;
+    fire_due_audit_exports(&mut conn, &None, &[], &NoOpMetrics)
+        .await
+        .expect("tick after decommission");
+    uninstall();
+
+    assert_eq!(
+        sink.all_seqs(),
+        vec![1, 2],
+        "a tick after decommission must not deliver the new records: the \
+         shard is retired and no exporter owes it anything"
+    );
+    let status = export_status(&mut conn, 0, chrono::Utc::now())
+        .await
+        .expect("status")
+        .expect("row");
+    assert_eq!(status.delivery_state, "RETIRED");
+}
+
+// ── Issue #1273, finding 2: decommission and reactivate are audited ────────
+//
+// Mirrors `a_redrive_and_its_audit_record_land_together_on_the_target_shard`:
+// the handler runs the mutation and the audit insert in ONE transaction on
+// the target shard's connection (exercised end to end by the auth-boundary
+// and contract suites); these tests reproduce that shape and assert the
+// pairing for the two new operations.
+
+#[tokio::test]
+async fn a_decommission_and_its_audit_record_land_together_on_the_target_shard() {
+    let _guard = TEST_SERIAL.lock().await;
+    let _sink = install(Arc::new(RecordingSink::new(200)), 100);
+    let (mut conn, _c) = make_conn().await;
+    insert_audit_rows(&mut conn, 2).await;
+    fire_due_audit_exports(&mut conn, &None, &[], &NoOpMetrics)
+        .await
+        .expect("tick");
+    uninstall();
+
+    use diesel_async::AsyncConnection as _;
+    let outcome = Box::pin(
+        conn.transaction::<DecommissionOutcome, autumn_harvest::error::HarvestError, _>(
+            async |conn| {
+                let outcome = autumn_harvest::audit_export::decommission_cursor_locked(
+                    conn,
+                    0,
+                    chrono::Utc::now(),
+                )
+                .await?;
+                let record = NewAuditRecord {
+                    actor: "alice",
+                    operation: autumn_harvest::audit::OP_AUDIT_EXPORT_DECOMMISSION,
+                    target_type: autumn_harvest::audit::TARGET_AUDIT_EXPORT,
+                    target_id: Some("shard=0"),
+                    route_or_command: "POST /admin/audit-export/decommission",
+                    request_id: None,
+                    idempotency_key: None,
+                    status: STATUS_SUCCEEDED,
+                    error_summary: None,
+                    shard_id: Some(0),
+                    source: "api",
+                };
+                audit::insert_audit(conn, &record).await?;
+                Ok(outcome)
+            },
+        ),
+    )
+    .await
+    .expect("transaction commits");
+
+    assert_eq!(outcome, DecommissionOutcome::Retired);
+
+    let rows: i64 = harvest_audit_log::table
+        .filter(
+            harvest_audit_log::operation.eq(autumn_harvest::audit::OP_AUDIT_EXPORT_DECOMMISSION),
+        )
+        .count()
+        .get_result(&mut conn)
+        .await
+        .expect("count");
+    assert_eq!(
+        rows, 1,
+        "a decommission must leave exactly one audit_export.decommission row: \
+         issue #1273 finding 2 is that this operation had no trail at all"
+    );
+}
+
+#[tokio::test]
+async fn a_reactivate_and_its_audit_record_land_together_on_the_target_shard() {
+    let _guard = TEST_SERIAL.lock().await;
+    uninstall();
+    let (mut conn, _c) = make_conn().await;
+    insert_audit_rows(&mut conn, 2).await;
+    ensure_cursor_row(&mut conn, 0).await.expect("cursor");
+    autumn_harvest::audit_export::decommission_cursor(&mut conn, 0, chrono::Utc::now())
+        .await
+        .expect("decommission");
+
+    use diesel_async::AsyncConnection as _;
+    let outcome = Box::pin(
+        conn.transaction::<ReactivateOutcome, autumn_harvest::error::HarvestError, _>(
+            async |conn| {
+                let outcome = autumn_harvest::audit_export::reactivate_cursor_locked(
+                    conn,
+                    0,
+                    chrono::Utc::now(),
+                )
+                .await?;
+                let record = NewAuditRecord {
+                    actor: "alice",
+                    operation: autumn_harvest::audit::OP_AUDIT_EXPORT_REACTIVATE,
+                    target_type: autumn_harvest::audit::TARGET_AUDIT_EXPORT,
+                    target_id: Some("shard=0"),
+                    route_or_command: "POST /admin/audit-export/reactivate",
+                    request_id: None,
+                    idempotency_key: None,
+                    status: STATUS_SUCCEEDED,
+                    error_summary: None,
+                    shard_id: Some(0),
+                    source: "api",
+                };
+                audit::insert_audit(conn, &record).await?;
+                Ok(outcome)
+            },
+        ),
+    )
+    .await
+    .expect("transaction commits");
+
+    assert_eq!(outcome, ReactivateOutcome::Reactivated);
+
+    let status = export_status(&mut conn, 0, chrono::Utc::now())
+        .await
+        .expect("status")
+        .expect("row");
+    assert_ne!(
+        status.delivery_state, "RETIRED",
+        "reactivate must clear retired_at"
+    );
+
+    let rows: i64 = harvest_audit_log::table
+        .filter(harvest_audit_log::operation.eq(autumn_harvest::audit::OP_AUDIT_EXPORT_REACTIVATE))
+        .count()
+        .get_result(&mut conn)
+        .await
+        .expect("count");
+    assert_eq!(rows, 1, "a reactivate must leave exactly one audit row");
+}
+
+#[tokio::test]
+async fn decommissioning_a_shard_that_never_exported_reports_not_configured() {
+    let _guard = TEST_SERIAL.lock().await;
+    uninstall();
+    let (mut conn, _c) = make_conn().await;
+    assert_eq!(
+        autumn_harvest::audit_export::decommission_cursor(&mut conn, 0, chrono::Utc::now())
+            .await
+            .expect("decommission"),
+        DecommissionOutcome::NotConfigured
+    );
+}
+
+#[tokio::test]
+async fn decommissioning_an_already_retired_shard_is_reported_idempotently() {
+    let _guard = TEST_SERIAL.lock().await;
+    uninstall();
+    let (mut conn, _c) = make_conn().await;
+    insert_audit_rows(&mut conn, 1).await;
+    ensure_cursor_row(&mut conn, 0).await.expect("cursor");
+    assert_eq!(
+        autumn_harvest::audit_export::decommission_cursor(&mut conn, 0, chrono::Utc::now())
+            .await
+            .expect("decommission"),
+        DecommissionOutcome::Retired
+    );
+    assert_eq!(
+        autumn_harvest::audit_export::decommission_cursor(&mut conn, 0, chrono::Utc::now())
+            .await
+            .expect("decommission"),
+        DecommissionOutcome::AlreadyRetired,
+        "a second decommission must not error or re-bump the epoch silently \
+         -- it reports the no-op so the caller can still audit the request"
+    );
+}
+
+#[tokio::test]
+async fn reactivating_an_active_shard_is_reported_idempotently() {
+    let _guard = TEST_SERIAL.lock().await;
+    uninstall();
+    let (mut conn, _c) = make_conn().await;
+    insert_audit_rows(&mut conn, 1).await;
+    ensure_cursor_row(&mut conn, 0).await.expect("cursor");
+    assert_eq!(
+        autumn_harvest::audit_export::reactivate_cursor(&mut conn, 0, chrono::Utc::now())
+            .await
+            .expect("reactivate"),
+        ReactivateOutcome::AlreadyActive
+    );
+}
+
+#[tokio::test]
+async fn reactivating_a_shard_that_never_exported_reports_not_configured() {
+    let _guard = TEST_SERIAL.lock().await;
+    uninstall();
+    let (mut conn, _c) = make_conn().await;
+    assert_eq!(
+        autumn_harvest::audit_export::reactivate_cursor(&mut conn, 0, chrono::Utc::now())
+            .await
+            .expect("reactivate"),
+        ReactivateOutcome::NotConfigured
     );
 }
 

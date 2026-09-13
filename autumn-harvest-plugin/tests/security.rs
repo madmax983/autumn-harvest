@@ -1857,6 +1857,37 @@ async fn eris_require_auth_blocks_audit_export_redrive() {
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 }
 
+// Issue #1273: decommission and reactivate mutate the same compliance
+// cursor as redrive (one retires it, discarding the compliance guarantee
+// over unshipped records; the other resumes it) and must sit behind the
+// same auth gate.
+
+#[tokio::test]
+async fn eris_require_auth_blocks_audit_export_decommission() {
+    let app = authenticated_app();
+    let res = app
+        .oneshot(post_json(
+            "/admin/audit-export/decommission",
+            r#"{"shard": 0}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn eris_require_auth_blocks_audit_export_reactivate() {
+    let app = authenticated_app();
+    let res = app
+        .oneshot(post_json(
+            "/admin/audit-export/reactivate",
+            r#"{"shard": 0}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
 // ── Dev-profile unauthenticated management API (issue #1284) ─────────────────
 //
 // The quickstart's documented Step 3 —
