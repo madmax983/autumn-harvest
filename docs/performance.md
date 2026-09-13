@@ -1809,6 +1809,9 @@ standalone note rather than part of the claim-path attribution table above:
 * [`docs/performance-usage-report-activity-lookback.md`](performance-usage-report-activity-lookback.md)
   — indexing the activity-attempt lookback LATERAL join in `GET /admin/usage`
   (issue #596), the one CTE the 2026-07 usage-report-indexes migration missed.
+* [`docs/performance-external-outbox-scan.md`](performance-external-outbox-scan.md)
+  — indexing both sides of the three external signal/cancel/await outbox claim
+  queries, and pinning their plan against a stale row estimate (issue #1486).
 * [`docs/performance-quota-history-bytes.md`](performance-quota-history-bytes.md)
   — measuring the `history_bytes` admission check's cost claim (issue #946
   AC7); partially inaccurate claim, no fix identified.

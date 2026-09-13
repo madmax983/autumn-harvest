@@ -1,0 +1,38 @@
+Limit  (cost=10.01..1355.56 rows=1 width=152) (actual rows=1 loops=1)
+  Output: e.id, e.workflow_exec_id, e.event_id, e.event_type, e.event_data, e."timestamp", e.cohort, e.ctid, execs.ctid, res.ctid
+  Buffers: shared hit=7778 read=13467 written=134
+  ->  LockRows  (cost=10.01..65942.03 rows=49 width=152) (actual rows=1 loops=1)
+        Output: e.id, e.workflow_exec_id, e.event_id, e.event_type, e.event_data, e."timestamp", e.cohort, e.ctid, execs.ctid, res.ctid
+        Buffers: shared hit=7778 read=13467 written=134
+        ->  Nested Loop Anti Join  (cost=10.01..65941.54 rows=49 width=152) (actual rows=1 loops=1)
+              Output: e.id, e.workflow_exec_id, e.event_id, e.event_type, e.event_data, e."timestamp", e.cohort, e.ctid, execs.ctid, res.ctid
+              Buffers: shared hit=7777 read=13467 written=134
+              ->  Nested Loop  (cost=0.28..39281.53 rows=49 width=146) (actual rows=1 loops=1)
+                    Output: e.id, e.workflow_exec_id, e.event_id, e.event_type, e.event_data, e."timestamp", e.cohort, e.ctid, execs.ctid
+                    Inner Unique: true
+                    Buffers: shared hit=7703 read=13337 written=4
+                    ->  Seq Scan on public.harvest_events e  (cost=0.00..38888.88 rows=68 width=140) (actual rows=1 loops=1)
+                          Output: e.id, e.workflow_exec_id, e.event_id, e.event_type, e.event_data, e."timestamp", e.cohort, e.ctid
+                          Filter: ((e.id <> ALL ('{}'::bigint[])) AND (e.event_type = 'ExternalSignalRequested'::text) AND (((e.event_data -> 'data'::text) ->> 'signal_id'::text) IS NOT NULL))
+                          Rows Removed by Filter: 1020000
+                          Buffers: shared hit=7700 read=13337 written=4
+                    ->  Index Scan using harvest_workflow_executions_pkey on public.harvest_workflow_executions execs  (cost=0.28..5.77 rows=1 width=22) (actual rows=1 loops=1)
+                          Output: execs.ctid, execs.id
+                          Index Cond: (execs.id = e.workflow_exec_id)
+                          Filter: ((execs.shard_id = ANY ('{0}'::integer[])) AND (execs.state = 'RUNNING'::text))
+                          Buffers: shared hit=3
+              ->  Bitmap Heap Scan on public.harvest_events res  (cost=9.72..544.07 rows=1 width=94) (actual rows=0 loops=1)
+                    Output: res.ctid, res.workflow_exec_id, res.event_data
+                    Recheck Cond: (res.workflow_exec_id = e.workflow_exec_id)
+                    Filter: ((res.event_type = ANY ('{ExternalSignalDelivered,ExternalSignalFailed}'::text[])) AND (((res.event_data -> 'data'::text) ->> 'signal_id'::text) = ((e.event_data -> 'data'::text) ->> 'signal_id'::text)))
+                    Rows Removed by Filter: 201
+                    Heap Blocks: exact=201
+                    Buffers: shared hit=74 read=130 written=130
+                    ->  Bitmap Index Scan on idx_harvest_events_history_page  (cost=0.00..9.72 rows=181 width=0) (actual rows=201 loops=1)
+                          Index Cond: (res.workflow_exec_id = e.workflow_exec_id)
+                          Buffers: shared hit=3
+Query Identifier: 4804938341900163890
+Planning:
+  Buffers: shared hit=249 read=31
+Planning Time: 1.301 ms
+Execution Time: 105.779 ms

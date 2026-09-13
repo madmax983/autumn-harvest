@@ -1,0 +1,38 @@
+Limit  (cost=0.53..24.52 rows=1 width=170) (actual rows=1 loops=1)
+  Output: e.id, e.workflow_exec_id, e.event_id, e.event_type, e.event_data, e."timestamp", e.cohort, e.ctid, running.*, res.ctid
+  Buffers: shared hit=6 read=1
+  ->  LockRows  (cost=0.53..24.52 rows=1 width=170) (actual rows=1 loops=1)
+        Output: e.id, e.workflow_exec_id, e.event_id, e.event_type, e.event_data, e."timestamp", e.cohort, e.ctid, running.*, res.ctid
+        Buffers: shared hit=6 read=1
+        ->  Nested Loop Anti Join  (cost=0.53..24.51 rows=1 width=170) (actual rows=1 loops=1)
+              Output: e.id, e.workflow_exec_id, e.event_id, e.event_type, e.event_data, e."timestamp", e.cohort, e.ctid, running.*, res.ctid
+              Join Filter: ((res.workflow_exec_id = e.workflow_exec_id) AND (((res.event_data -> 'data'::text) ->> 'signal_id'::text) = ((e.event_data -> 'data'::text) ->> 'signal_id'::text)))
+              Buffers: shared hit=5 read=1
+              ->  Nested Loop  (cost=0.41..16.34 rows=1 width=164) (actual rows=1 loops=1)
+                    Output: e.id, e.workflow_exec_id, e.event_id, e.event_type, e.event_data, e."timestamp", e.cohort, e.ctid, running.*
+                    Buffers: shared hit=4 read=1
+                    ->  Index Scan using idx_harvest_events_external_outbox_pending on public.harvest_events e  (cost=0.12..8.02 rows=1 width=140) (actual rows=1 loops=1)
+                          Output: e.id, e.workflow_exec_id, e.event_id, e.event_type, e.event_data, e."timestamp", e.cohort, e.ctid
+                          Index Cond: (e.event_type = 'ExternalSignalRequested'::text)
+                          Filter: (((e.event_data -> 'data'::text) ->> 'signal_id'::text) IS NOT NULL)
+                          Buffers: shared hit=1 read=1
+                    ->  Subquery Scan on running  (cost=0.28..8.31 rows=1 width=24) (actual rows=1 loops=1)
+                          Output: running.*
+                          Buffers: shared hit=3
+                          ->  Limit  (cost=0.28..8.30 rows=1 width=4) (actual rows=1 loops=1)
+                                Output: 1
+                                Buffers: shared hit=3
+                                ->  Index Scan using harvest_workflow_executions_pkey on public.harvest_workflow_executions x  (cost=0.28..8.30 rows=1 width=4) (actual rows=1 loops=1)
+                                      Output: 1
+                                      Index Cond: (x.id = e.workflow_exec_id)
+                                      Filter: ((x.shard_id = ANY ('{0}'::integer[])) AND (x.state = 'RUNNING'::text))
+                                      Buffers: shared hit=3
+              ->  Index Scan using idx_harvest_events_external_signal_resolved on public.harvest_events res  (cost=0.12..8.14 rows=1 width=94) (actual rows=0 loops=1)
+                    Output: res.ctid, res.workflow_exec_id, res.event_data
+                    Filter: (res.event_type = ANY ('{ExternalSignalDelivered,ExternalSignalFailed}'::text[]))
+                    Buffers: shared hit=1
+Query Identifier: 8285574398957116261
+Planning:
+  Buffers: shared hit=158 read=4
+Planning Time: 0.913 ms
+Execution Time: 0.088 ms

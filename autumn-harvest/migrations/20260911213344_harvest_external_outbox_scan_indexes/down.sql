@@ -1,0 +1,4 @@
+DROP INDEX IF EXISTS idx_harvest_events_external_outbox_pending;
+DROP INDEX IF EXISTS idx_harvest_events_external_signal_resolved;
+DROP INDEX IF EXISTS idx_harvest_events_external_cancel_resolved;
+DROP INDEX IF EXISTS idx_harvest_events_external_await_resolved;

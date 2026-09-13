@@ -91,6 +91,7 @@ linux        autumn-harvest         integration                      -          
 linux        autumn-harvest         integration                      -                          dag_execution_timeout_tests
 linux        autumn-harvest         integration                      -                          event_batch_tests
 linux        autumn-harvest         integration                      -                          event_partitioning_tests
+linux        autumn-harvest         integration                      -                          external_outbox_scan_tests
 linux        autumn-harvest         integration                      -                          force_fail
 linux        autumn-harvest         integration                      -                          history_ceiling_claim_tests
 linux        autumn-harvest         integration                      -                          integration_e2e

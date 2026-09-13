@@ -96,6 +96,7 @@ mod event_partitioning_tests;
 mod executor_span_tests;
 #[cfg(feature = "testing")]
 mod external_completion_tests;
+mod external_outbox_scan_tests;
 mod fanout_tests;
 mod force_fail_tests;
 mod guardrail_catalog_tests;

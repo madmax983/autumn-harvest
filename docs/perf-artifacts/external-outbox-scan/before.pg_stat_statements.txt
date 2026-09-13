@@ -1,0 +1,5 @@
+total buffers across the listed statements: 299082
+
+calls=51    buffers=297938     SELECT e.workflow_exec_id, e.event_data->$1->>$2 AS correlation_id FROM (SELECT e.* FROM harvest_events e INNER JOIN harvest_workflow_executions execs ON e.workflow_exec_id = execs.id WHERE e.event_ty
+calls=50    buffers=1139       INSERT INTO harvest_events (workflow_exec_id, event_id, event_type, event_data, timestamp) VALUES ($1, $2, $3, jsonb_build_object($4, $5, $6, jsonb_build_object($7, $8)), NOW())
+calls=1     buffers=5          SELECT pg_stat_statements_reset(0, (SELECT oid FROM pg_database WHERE datname = current_database()), 0)

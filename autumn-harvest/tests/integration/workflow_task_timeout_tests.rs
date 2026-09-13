@@ -244,7 +244,7 @@ async fn reset_reverts_running_task_to_pending() {
 
     assert_eq!(task_state(&mut conn, task_id).await, "RUNNING");
 
-    reset_timed_out_workflow_task(&pool, task_id, "worker-1").await;
+    reset_timed_out_workflow_task(&pool, task_id, "worker-1", 0).await;
 
     assert_eq!(
         task_state(&mut conn, task_id).await,
@@ -266,7 +266,7 @@ async fn reset_is_idempotent_on_wrong_state_or_worker() {
     let task_id = insert_running_workflow_task(&mut conn, exec_id, "worker-1").await;
 
     // Wrong worker_id — should not transition.
-    reset_timed_out_workflow_task(&pool, task_id, "worker-99").await;
+    reset_timed_out_workflow_task(&pool, task_id, "worker-99", 0).await;
     assert_eq!(
         task_state(&mut conn, task_id).await,
         "RUNNING",
@@ -274,11 +274,50 @@ async fn reset_is_idempotent_on_wrong_state_or_worker() {
     );
 
     // Correct worker — transitions.
-    reset_timed_out_workflow_task(&pool, task_id, "worker-1").await;
+    reset_timed_out_workflow_task(&pool, task_id, "worker-1", 0).await;
     assert_eq!(task_state(&mut conn, task_id).await, "PENDING");
 
     // Second call on PENDING task — no crash, still PENDING.
-    reset_timed_out_workflow_task(&pool, task_id, "worker-1").await;
+    reset_timed_out_workflow_task(&pool, task_id, "worker-1", 0).await;
+    assert_eq!(task_state(&mut conn, task_id).await, "PENDING");
+}
+
+/// A stale reset must not clobber a re-claim taken at a newer claim epoch.
+///
+/// `poison_pill::requeue_orphan` hands an orphan back as `PENDING` with
+/// `crash_strikes + 1`, and nothing stops the same worker from winning it
+/// again. A `(state, worker_id)` guard alone matches that new claim. A reset
+/// still in flight from the previous dispatch would then re-`PENDING` a row
+/// whose replacement handler already runs. That invites a second concurrent
+/// claim of one workflow task.
+///
+/// `crash_strikes` is the discriminator, because the requeue that creates the
+/// race is what bumps it (issue #1459). It is the same argument
+/// `queue::release_task_for_capability_miss` already records.
+#[tokio::test]
+async fn reset_does_not_clobber_a_reclaim_at_a_newer_claim_epoch() {
+    let (mut conn, pool, _container) = setup().await;
+
+    let exec_id = insert_running_workflow(&mut conn).await;
+    let task_id = insert_running_workflow_task(&mut conn, exec_id, "worker-1").await;
+
+    // The orphan requeue bumped the epoch, and the same worker re-claimed.
+    diesel::sql_query("UPDATE harvest_task_queue SET crash_strikes = 1 WHERE id = $1")
+        .bind::<diesel::sql_types::Uuid, _>(task_id)
+        .execute(&mut conn)
+        .await
+        .expect("bump the claim epoch");
+
+    // The in-flight reset still carries the epoch it claimed at.
+    reset_timed_out_workflow_task(&pool, task_id, "worker-1", 0).await;
+    assert_eq!(
+        task_state(&mut conn, task_id).await,
+        "RUNNING",
+        "a reset from the previous claim epoch must not release the new claim"
+    );
+
+    // The reset that belongs to the current claim still applies.
+    reset_timed_out_workflow_task(&pool, task_id, "worker-1", 1).await;
     assert_eq!(task_state(&mut conn, task_id).await, "PENDING");
 }
 

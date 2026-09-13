@@ -28019,6 +28019,10 @@ impl Worker {
         let registry = Arc::clone(&self.registry);
         let task_id = task.id;
         let task_type = task.task_type.clone();
+        // The `crash_strikes` this dispatch claimed the row at. It is the claim
+        // epoch, so a release can apply to this claim and not merely to this
+        // worker. Only `poison_pill::requeue_orphan` changes it.
+        let claim_crash_strikes = task.crash_strikes;
         let worker_id = self.config.worker_id.clone();
         let build_id = self.config.build_id.clone();
         let cancellation_grace_period = self.config.cancellation_grace_period;
@@ -28202,6 +28206,42 @@ impl Worker {
                             error = %error,
                             "task execution failed"
                         );
+                        // Release the claim so the row stays retryable (issue
+                        // #1459). A workflow task that returns an error here
+                        // keeps its claim: `state` is `RUNNING` and `worker_id`
+                        // is this worker. Nothing recovers that row. The
+                        // in-process timeout above cannot fire, because
+                        // `process_task` already returned. The orphan reclaimer
+                        // skips a task that a live worker owns. So the execution
+                        // wedges until this worker stops.
+                        //
+                        // The dominant error here is a Postgres deadlock. The
+                        // parent's decision cycle and a child's terminal write
+                        // contend under load. Postgres aborts one side so the
+                        // other proceeds, and the aborted side must retry. An
+                        // aborted transaction wrote nothing, so a retry replays
+                        // the same cycle from the same history.
+                        //
+                        // Measured with issue #1459's recipe, four copies pinned
+                        // to two CPUs, rounds alternating between builds: 7
+                        // wedges in 16 runs before, 0 in 16 after.
+                        //
+                        // The reset is guarded on `state = 'RUNNING' AND
+                        // worker_id = <self>`, so it never disturbs a row that a
+                        // reclaim or a new owner already took. The slot is
+                        // dropped first, as the timeout arm does, so recovery
+                        // I/O holds no concurrency permit.
+                        #[cfg(feature = "db")]
+                        if task_type == "workflow" {
+                            drop(permit);
+                            reset_timed_out_workflow_task(
+                                &pool,
+                                task_id,
+                                &worker_id,
+                                claim_crash_strikes,
+                            )
+                            .await;
+                        }
                     }
                     Ok(TaskDispatchOutcome::BodyTimedOut) => {
                         // Release the concurrency slot immediately so other
@@ -28289,7 +28329,13 @@ impl Worker {
                                 // Reset the task to PENDING so any worker can
                                 // re-claim it on the next poll, without waiting
                                 // for the orphan-reclaim staleness window.
-                                reset_timed_out_workflow_task(&pool, task_id, &worker_id).await;
+                                reset_timed_out_workflow_task(
+                                    &pool,
+                                    task_id,
+                                    &worker_id,
+                                    claim_crash_strikes,
+                                )
+                                .await;
                             }
                         }
                         #[cfg(not(feature = "db"))]
@@ -28330,6 +28376,30 @@ impl Worker {
                         error = %error,
                         "task execution failed"
                     );
+                    // Release the claim here too (issue #1459, Codex P1 on PR
+                    // #1497). This arm runs when the task is not a workflow
+                    // task. It also runs when `with_workflow_task_timeout` is
+                    // `Duration::ZERO`. The builder documents that value as a
+                    // supported way to disable the wall-clock guard. A workflow
+                    // task on that path met the same abandoned claim, so the
+                    // recovery cannot live only in the timed arm.
+                    //
+                    // An activity task needs nothing here. Its `heartbeat_timeout`
+                    // and `start_to_close` columns give the server-side scan in
+                    // `timeout::find_timed_out_tasks` a deadline to find it by. A
+                    // workflow task has no such column, which is why only its
+                    // claim strands.
+                    #[cfg(feature = "db")]
+                    if task_type == "workflow" {
+                        drop(permit);
+                        reset_timed_out_workflow_task(
+                            &pool,
+                            task_id,
+                            &worker_id,
+                            claim_crash_strikes,
+                        )
+                        .await;
+                    }
                 }
             }
         };
@@ -28846,7 +28916,12 @@ const RESET_POOL_RETRY_BACKOFF_MS: &[u64] =
 /// Uses an optimistic `WHERE state = 'RUNNING' AND worker_id = …` guard so a
 /// concurrent reclaim or a different worker that somehow picked it up does not
 /// get its state overwritten.
-pub async fn reset_timed_out_workflow_task(pool: &DbPool, task_id: uuid::Uuid, worker_id: &str) {
+pub async fn reset_timed_out_workflow_task(
+    pool: &DbPool,
+    task_id: uuid::Uuid,
+    worker_id: &str,
+    claim_crash_strikes: i32,
+) {
     use crate::schema::harvest_task_queue::dsl;
 
     // Retry acquiring a pool connection: a transient pool saturation during
@@ -28893,7 +28968,15 @@ pub async fn reset_timed_out_workflow_task(pool: &DbPool, task_id: uuid::Uuid, w
         dsl::harvest_task_queue
             .find(task_id)
             .filter(dsl::state.eq("RUNNING"))
-            .filter(dsl::worker_id.eq(worker_id)),
+            .filter(dsl::worker_id.eq(worker_id))
+            // Claim-epoch guard (issue #1459). It is the same race
+            // `queue::release_task_for_capability_miss` already guards.
+            // `poison_pill::requeue_orphan` hands an orphan back as `PENDING`
+            // with `crash_strikes + 1`, and the same worker can win it again.
+            // A `(state, worker_id)` guard alone then matches that new claim.
+            // This reset would re-`PENDING` a row whose replacement handler
+            // already runs, and invite a second concurrent dispatch.
+            .filter(dsl::crash_strikes.eq(claim_crash_strikes)),
     )
     .set((
         dsl::state.eq("PENDING"),
