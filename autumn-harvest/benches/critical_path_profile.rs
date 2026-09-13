@@ -41,6 +41,20 @@
 //! `execution_levels.push` comment) and from `mock_duration`'s registration
 //! cost.
 //!
+//! # Baseline
+//!
+//! This harness was committed but never run against a profiler until the
+//! pass recorded in `docs/performance-critical-path.md`. Fresh baseline on
+//! that pass's starting commit, default sizing, `valgrind --tool=callgrind
+//! --branch-sim=no --cache-sim=no`:
+//!
+//! ```text
+//! 105,644,121 (100.0%)  PROGRAM TOTALS
+//! 81,022,150  ( 76.69%)  autumn_harvest::critical_path::CriticalPathAnalyzer::analyze
+//! ```
+//!
+//! See that document for the full profile, the fix, and the after numbers.
+//!
 //! # Running
 //!
 //! ```text

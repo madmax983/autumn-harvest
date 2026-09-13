@@ -92,6 +92,16 @@ impl CriticalPathAnalyzer {
 
         let mut distances = vec![Duration::ZERO; tasks.len()];
         let mut predecessors = vec![None; tasks.len()];
+        // A node is a sink only when no other node names it as an upstream.
+        // Sink detection folds into the main DP loop below, instead of
+        // running as a second full pass over `tasks`/`task.upstreams`. The
+        // DP loop already visits every task-upstream edge exactly once, in
+        // the same order `for task in tasks { for &up_idx in
+        // &task.upstreams }` would. So marking `is_sink[up_idx] = false`
+        // there produces the identical result. Level order does not affect
+        // which indices are named as an upstream, only when that fact is
+        // discovered.
+        let mut is_sink = vec![true; tasks.len()];
 
         // `activity_durations` is keyed by activity NAME, not by task, so a
         // DAG whose tasks reuse a small set of activity types (a wide
@@ -227,6 +237,7 @@ impl CriticalPathAnalyzer {
                 let mut best_pred = None;
 
                 for &up_idx in &task.upstreams {
+                    is_sink[up_idx] = false;
                     if distances[up_idx] >= max_upstream_dist {
                         // >= because we want the last one in case of tie, or simply just >
                         // Actually, just > is fine.
@@ -239,14 +250,6 @@ impl CriticalPathAnalyzer {
 
                 distances[task_index] = max_upstream_dist + duration;
                 predecessors[task_index] = best_pred;
-            }
-        }
-
-        // Identify sink nodes (nodes with no downstreams)
-        let mut is_sink = vec![true; tasks.len()];
-        for task in tasks {
-            for &up_idx in &task.upstreams {
-                is_sink[up_idx] = false;
             }
         }
 

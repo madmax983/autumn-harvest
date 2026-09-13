@@ -1,0 +1,956 @@
+--------------------------------------------------------------------------------
+Profile data file 'cg_critpath_dbg.out' (creator: callgrind-3.22.0)
+--------------------------------------------------------------------------------
+I1 cache: 
+D1 cache: 
+LL cache: 
+Timerange: Basic block 0 - 28210065
+Trigger: Program termination
+Profiled target:  /home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e (PID 13141, part 1)
+Events recorded:  Ir
+Events shown:     Ir
+Event sort order: Ir
+Thresholds:       99.9
+Include dirs:     
+User annotated:   /home/user/autumn-harvest/autumn-harvest/src/critical_path.rs
+Auto-annotation:  on
+
+--------------------------------------------------------------------------------
+Ir                   
+--------------------------------------------------------------------------------
+105,636,492 (100.0%)  PROGRAM TOTALS
+
+--------------------------------------------------------------------------------
+Ir                   file:function
+--------------------------------------------------------------------------------
+21,926,050 (20.76%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/index.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze
+17,046,500 (16.14%)  /home/user/autumn-harvest/autumn-harvest/src/critical_path.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+13,198,050 (12.49%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/non_null.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze
+12,024,350 (11.38%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/iter/macros.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze
+ 7,412,100 ( 7.02%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/cmp.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze
+ 6,759,600 ( 6.40%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/time.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze
+ 2,514,310 ( 2.38%)  ./malloc/./malloc/malloc.c:_int_malloc [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 2,340,000 ( 2.22%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/cmp.rs:autumn_harvest::dag::DagTaskRef::upstream
+ 1,443,000 ( 1.37%)  /home/user/autumn-harvest/autumn-harvest/src/dag.rs:autumn_harvest::dag::DagTaskRef::upstream [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+ 1,357,244 ( 1.28%)  ./string/../sysdeps/x86_64/multiarch/memcmp-avx2-movbe.S:__memcmp_avx2_movbe [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 1,301,520 ( 1.23%)  ./string/../sysdeps/x86_64/multiarch/memset-vec-unaligned-erms.S:__memset_avx2_unaligned_erms [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 1,166,797 ( 1.10%)  ./malloc/./malloc/malloc.c:_int_free [/usr/lib/x86_64-linux-gnu/libc.so.6]
+   938,192 ( 0.89%)  ./malloc/./malloc/malloc.c:realloc [/usr/lib/x86_64-linux-gnu/libc.so.6]
+   904,813 ( 0.86%)  ./malloc/./malloc/malloc.c:_int_realloc [/usr/lib/x86_64-linux-gnu/libc.so.6]
+   868,000 ( 0.82%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/cmp.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze
+   808,500 ( 0.77%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/option.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze
+   626,586 ( 0.59%)  ./malloc/./malloc/malloc.c:_int_free_merge_chunk [/usr/lib/x86_64-linux-gnu/libc.so.6]
+   614,114 ( 0.58%)  ./string/../sysdeps/x86_64/multiarch/memmove-vec-unaligned-erms.S:__memcpy_avx_unaligned_erms [/usr/lib/x86_64-linux-gnu/libc.so.6]
+   514,800 ( 0.49%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/iter/macros.rs:autumn_harvest::dag::DagTaskRef::upstream
+   460,085 ( 0.44%)  ./malloc/./malloc/malloc.c:malloc [/usr/lib/x86_64-linux-gnu/libc.so.6]
+   448,480 ( 0.42%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/index.rs:autumn_harvest::dag::DagBuilder::build
+   444,600 ( 0.42%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/vec/mod.rs:autumn_harvest::dag::DagTaskRef::upstream
+   396,517 ( 0.38%)  /home/user/autumn-harvest/autumn-harvest/benches/critical_path_profile.rs:critical_path_profile::main [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+   374,400 ( 0.35%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/mod.rs:autumn_harvest::dag::DagTaskRef::upstream
+   353,298 ( 0.33%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/raw_vec/mod.rs:alloc::raw_vec::RawVecInner<A>::finish_grow [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+   352,126 ( 0.33%)  ./malloc/./malloc/malloc.c:malloc_consolidate [/usr/lib/x86_64-linux-gnu/libc.so.6]
+   348,884 ( 0.33%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/vec/mod.rs:autumn_harvest::dag::DagBuilder::build
+   346,770 ( 0.33%)  ./malloc/./malloc/malloc.c:unlink_chunk.isra.0 [/usr/lib/x86_64-linux-gnu/libc.so.6]
+   336,374 ( 0.32%)  /home/user/autumn-harvest/autumn-harvest/src/dag.rs:autumn_harvest::dag::DagBuilder::build [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+   288,990 ( 0.27%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/raw_vec/mod.rs:alloc::raw_vec::RawVec<T,A>::grow_one [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+   287,905 ( 0.27%)  ./malloc/./malloc/malloc.c:free [/usr/lib/x86_64-linux-gnu/libc.so.6]
+   267,204 ( 0.25%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/non_null.rs:autumn_harvest::dag::DagBuilder::build
+   249,600 ( 0.24%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/cell.rs:autumn_harvest::dag::DagTaskRef::upstream
+   249,600 ( 0.24%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/index.rs:autumn_harvest::dag::DagTaskRef::upstream
+   249,600 ( 0.24%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/iter.rs:autumn_harvest::dag::DagTaskRef::upstream
+   248,000 ( 0.23%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/str/pattern.rs:core::str::pattern::StrSearcher::new [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+   244,700 ( 0.23%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/num/uint_macros.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze
+   225,179 ( 0.21%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/iter/macros.rs:autumn_harvest::dag::DagBuilder::build
+   212,104 ( 0.20%)  ./malloc/./malloc/malloc.c:_int_free_maybe_consolidate [/usr/lib/x86_64-linux-gnu/libc.so.6]
+   210,600 ( 0.20%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/non_null.rs:autumn_harvest::dag::DagTaskRef::upstream
+   188,767 ( 0.18%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/num/uint_macros.rs:autumn_harvest::dag::DagBuilder::build
+   184,480 ( 0.17%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/str/pattern.rs:core::str::pattern::TwoWaySearcher::next_back [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+   179,886 ( 0.17%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/std/src/sys/alloc/unix.rs:__rustc::__rdl_realloc
+   170,950 ( 0.16%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/vec/mod.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze
+   162,550 ( 0.15%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mod.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze
+   160,000 ( 0.15%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/iter/adapters/filter.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze
+   139,307 ( 0.13%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/hash/sip.rs:<core::hash::sip::Hasher<S> as core::hash::Hasher>::write [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+   132,828 ( 0.13%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/raw_vec/mod.rs:autumn_harvest::dag::DagBuilder::build
+   132,600 ( 0.13%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/raw_vec/mod.rs:autumn_harvest::dag::DagTaskRef::upstream
+   131,200 ( 0.12%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mod.rs:<alloc::vec::into_iter::IntoIter<T,A> as core::iter::traits::iterator::Iterator>::try_fold
+   129,560 ( 0.12%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mod.rs:core::ptr::drop_in_place<autumn_harvest::dag::DagTask> [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+   128,001 ( 0.12%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/non_null.rs:critical_path_profile::main
+   125,262 ( 0.12%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/num/uint_macros.rs:alloc::raw_vec::RawVecInner<A>::finish_grow
+   124,800 ( 0.12%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/mem/mod.rs:autumn_harvest::dag::DagTaskRef::upstream
+   124,800 ( 0.12%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mod.rs:autumn_harvest::dag::DagTaskRef::upstream
+   124,800 ( 0.12%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mut_ptr.rs:autumn_harvest::dag::DagTaskRef::upstream
+   102,792 ( 0.10%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/std/src/alloc.rs:__rustc::__rdl_realloc [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+    94,400 ( 0.09%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/mem/maybe_uninit.rs:<alloc::vec::Vec<T,A> as core::clone::Clone>::clone
+    89,932 ( 0.09%)  ./malloc/./malloc/arena.c:realloc
+    88,662 ( 0.08%)  ./elf/./elf/dl-tunables.c:__GI___tunables_init [/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2]
+    88,550 ( 0.08%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/intrinsics/mod.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze
+    83,505 ( 0.08%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/alloc.rs:alloc::raw_vec::RawVecInner<A>::finish_grow
+    81,808 ( 0.08%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/std/src/sys/alloc/unix.rs:__rustc::__rdl_alloc
+    80,295 ( 0.08%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/alloc/layout.rs:alloc::raw_vec::RawVecInner<A>::finish_grow
+    73,600 ( 0.07%)  /home/user/autumn-harvest/autumn-harvest/src/dag.rs:critical_path_profile::main
+    72,400 ( 0.07%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/index.rs:core::str::pattern::TwoWaySearcher::next_back
+    71,880 ( 0.07%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/iter/macros.rs:critical_path_profile::main
+    68,962 ( 0.07%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mod.rs:autumn_harvest::dag::DagBuilder::build
+    68,400 ( 0.06%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/string.rs:<alloc::string::String as core::clone::Clone>::clone [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+    68,000 ( 0.06%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/string.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze
+    64,236 ( 0.06%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/intrinsics/mod.rs:alloc::raw_vec::RawVecInner<A>::finish_grow
+    59,200 ( 0.06%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/option.rs:<alloc::vec::Vec<T,A> as core::clone::Clone>::clone
+    53,064 ( 0.05%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/hash/sip.rs:core::hash::BuildHasher::hash_one
+    48,165 ( 0.05%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/cmp.rs:alloc::raw_vec::RawVec<T,A>::grow_one
+    48,165 ( 0.05%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/result.rs:alloc::raw_vec::RawVec<T,A>::grow_one
+    48,000 ( 0.05%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/iter/macros.rs:core::str::pattern::StrSearcher::new
+    47,602 ( 0.05%)  ./elf/./elf/dl-lookup.c:do_lookup_x [/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2]
+    46,738 ( 0.04%)  ./stdio-common/./stdio-common/vfscanf-internal.c:__vfscanf_internal [/usr/lib/x86_64-linux-gnu/libc.so.6]
+    43,388 ( 0.04%)  ./malloc/./malloc/malloc.c:alloc_perturb [/usr/lib/x86_64-linux-gnu/libc.so.6]
+    41,600 ( 0.04%)  /home/user/autumn-harvest/autumn-harvest/src/dag.rs:<alloc::vec::Vec<T,A> as core::clone::Clone>::clone
+    40,000 ( 0.04%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/iter/traits/accum.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze
+    38,592 ( 0.04%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/intrinsics/mod.rs:core::hash::BuildHasher::hash_one
+    38,545 ( 0.04%)  /rust/deps/hashbrown-0.16.1/src/map.rs:hashbrown::map::HashMap<K,V,S,A>::insert [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+    35,771 ( 0.03%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/vec/mod.rs:critical_path_profile::main
+    32,000 ( 0.03%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/str/iter.rs:core::str::iter::SplitInternal<P>::next_back [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+    30,840 ( 0.03%)  ./malloc/./malloc/arena.c:free
+    30,400 ( 0.03%)  /home/user/autumn-harvest/autumn-harvest/src/dag.rs:autumn_harvest::dag::short_activity_name [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+    25,728 ( 0.02%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/num/uint_macros.rs:core::hash::BuildHasher::hash_one
+    22,867 ( 0.02%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mod.rs:critical_path_profile::main
+    22,700 ( 0.02%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/iter/range.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze
+    22,562 ( 0.02%)  ./stdlib/../stdlib/strtol_l.c:____strtoul_l_internal [/usr/lib/x86_64-linux-gnu/libc.so.6]
+    22,512 ( 0.02%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/hash/mod.rs:core::hash::BuildHasher::hash_one [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+    22,400 ( 0.02%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/str/pattern.rs:core::str::iter::SplitInternal<P>::next_back
+    22,080 ( 0.02%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/iter/range.rs:core::str::pattern::TwoWaySearcher::next_back
+    21,600 ( 0.02%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/raw_vec/mod.rs:<alloc::string::String as core::clone::Clone>::clone
+    19,277 ( 0.02%)  ./elf/./elf/dl-reloc.c:_dl_relocate_object [/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2]
+    19,160 ( 0.02%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/raw_vec/mod.rs:core::ptr::drop_in_place<autumn_harvest::dag::DagTask>
+    17,687 ( 0.02%)  /rust/deps/hashbrown-0.16.1/src/control/tag.rs:hashbrown::map::HashMap<K,V,S,A>::insert
+    17,408 ( 0.02%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/raw_vec/mod.rs:<alloc::vec::Vec<T,A> as core::clone::Clone>::clone
+    16,131 ( 0.02%)  ./elf/./elf/dl-lookup.c:_dl_lookup_symbol_x [/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2]
+    16,000 ( 0.02%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/index.rs:core::str::pattern::StrSearcher::new
+    15,918 ( 0.02%)  ???:0x00000000048a06b0 [???]
+    15,822 ( 0.01%)  ./malloc/../string/bits/string_fortified.h:_int_realloc
+    14,971 ( 0.01%)  ./string/../sysdeps/x86_64/multiarch/../multiarch/strcmp-sse2.S:strcmp [/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2]
+    14,722 ( 0.01%)  ./elf/../sysdeps/generic/dl-new-hash.h:_dl_lookup_symbol_x
+    14,400 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/alloc.rs:<alloc::string::String as core::clone::Clone>::clone
+    14,400 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/raw_vec/mod.rs:autumn_harvest::dag::short_activity_name
+    14,400 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/profiling.rs:core::str::pattern::StrSearcher::new
+    14,400 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mod.rs:<alloc::string::String as core::clone::Clone>::clone
+    14,240 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/alloc.rs:core::ptr::drop_in_place<autumn_harvest::dag::DagTask>
+    14,160 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/num/uint_macros.rs:core::str::pattern::TwoWaySearcher::next_back
+    14,000 ( 0.01%)  /home/user/autumn-harvest/autumn-harvest/src/critical_path.rs:<alloc::vec::Vec<T> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<T,I>>::from_iter
+    13,957 ( 0.01%)  ./malloc/./malloc/arena.c:malloc
+    12,849 ( 0.01%)  ???:__rustc::__rust_realloc [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+    12,796 ( 0.01%)  /rust/deps/hashbrown-0.16.1/src/control/bitmask.rs:hashbrown::map::HashMap<K,V,S,A>::insert
+    12,780 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/intrinsics/mod.rs:<core::hash::sip::Hasher<S> as core::hash::Hasher>::write
+    11,767 ( 0.01%)  ./elf/../sysdeps/x86_64/dl-machine.h:_dl_relocate_object
+    11,499 ( 0.01%)  ./elf/./elf/do-rel.h:_dl_relocate_object
+    11,415 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mod.rs:core::ptr::drop_in_place<autumn_harvest::dag::DagDefinition> [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+    11,204 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mod.rs:alloc::rc::Rc<T,A>::drop_slow
+    11,158 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/cmp.rs:hashbrown::map::HashMap<K,V,S,A>::insert
+    11,108 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/alloc.rs:autumn_harvest::dag::DagBuilder::build
+    10,277 ( 0.01%)  ???:__rustc::__rust_no_alloc_shim_is_unstable_v2 [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+    10,276 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/std/src/sys/alloc/unix.rs:__rustc::__rdl_dealloc [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+    10,276 ( 0.01%)  ???:__rustc::__rust_dealloc [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+    10,226 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/std/src/alloc.rs:__rustc::__rdl_alloc [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+    10,226 ( 0.01%)  ???:__rustc::__rust_alloc [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+    10,200 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mut_ptr.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze
+     9,937 ( 0.01%)  ./elf/./elf/dl-lookup.c:check_match [/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2]
+     9,752 ( 0.01%)  /rust/deps/hashbrown-0.16.1/src/raw/mod.rs:hashbrown::map::HashMap<K,V,S,A>::insert
+     9,702 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/iter/macros.rs:<alloc::vec::Vec<T> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<T,I>>::from_iter
+     9,648 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/std/src/hash/random.rs:core::hash::BuildHasher::hash_one
+     9,602 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/num/uint_macros.rs:<alloc::vec::Vec<T,A> as core::clone::Clone>::clone
+     9,600 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/num/uint_macros.rs:core::str::pattern::StrSearcher::new
+     9,290 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mod.rs:<alloc::vec::Vec<T> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<T,I>>::from_iter
+     8,802 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/num/uint_macros.rs:<core::hash::sip::Hasher<S> as core::hash::Hasher>::write
+     8,005 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/slice.rs:<alloc::vec::Vec<T,A> as core::clone::Clone>::clone
+     8,000 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/option.rs:autumn_harvest::dag::short_activity_name
+     8,000 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/str/pattern.rs:autumn_harvest::dag::short_activity_name
+     7,960 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/sort/shared/mod.rs:core::slice::sort::unstable::ipnsort [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+     7,602 ( 0.01%)  ./elf/./elf/dl-version.c:_dl_check_map_versions [/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2]
+     6,960 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/cmp.rs:core::str::pattern::TwoWaySearcher::next_back
+     6,601 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/alloc.rs:critical_path_profile::main
+     6,448 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/raw_vec/mod.rs:critical_path_profile::main
+     6,412 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/iter/adapters/take.rs:<alloc::vec::Vec<T,A> as core::clone::Clone>::clone
+     6,400 ( 0.01%)  /home/user/autumn-harvest/autumn-harvest/src/policy.rs:<alloc::vec::Vec<T,A> as core::clone::Clone>::clone
+     6,400 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mod.rs:<alloc::vec::Vec<T,A> as core::clone::Clone>::clone
+     6,400 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mod.rs:autumn_harvest::dag::short_activity_name
+     6,400 ( 0.01%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/cmp.rs:core::str::pattern::StrSearcher::new
+     6,051 ( 0.01%)  ./elf/./elf/dl-tunables.h:__GI___tunables_init
+     4,907 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mod.rs:<core::hash::sip::Hasher<S> as core::hash::Hasher>::write
+     4,848 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/../../stdarch/crates/core_arch/src/x86/sse2.rs:hashbrown::map::HashMap<K,V,S,A>::insert
+     4,822 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mut_ptr.rs:hashbrown::map::HashMap<K,V,S,A>::insert
+     4,800 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/alloc.rs:autumn_harvest::dag::short_activity_name
+     4,800 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/string.rs:autumn_harvest::dag::short_activity_name
+     4,800 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/iter/macros.rs:<alloc::vec::Vec<T,A> as core::clone::Clone>::clone
+     4,800 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/str/iter.rs:autumn_harvest::dag::short_activity_name
+     4,800 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/str/mod.rs:autumn_harvest::dag::short_activity_name
+     4,782 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/cmp.rs:hashbrown::map::HashMap<K,V,S,A>::insert
+     4,683 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/alloc.rs:<alloc::vec::Vec<T,A> as core::clone::Clone>::clone
+     4,659 ( 0.00%)  ./string/../sysdeps/x86_64/multiarch/strcmp-avx2.S:__strncmp_avx2 [/usr/lib/x86_64-linux-gnu/libc.so.6]
+     4,104 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/cmp.rs:<core::hash::sip::Hasher<S> as core::hash::Hasher>::write
+     4,100 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/sort/shared/smallsort.rs:core::slice::sort::shared::smallsort::insertion_sort_shift_left [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+     3,784 ( 0.00%)  ./libio/./libio/genops.c:_IO_sputbackc [/usr/lib/x86_64-linux-gnu/libc.so.6]
+     3,765 ( 0.00%)  ./stdlib/./stdlib/getenv.c:getenv [/usr/lib/x86_64-linux-gnu/libc.so.6]
+     3,604 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mod.rs:<T as alloc::vec::spec_from_elem::SpecFromElem>::from_elem
+     3,471 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/cmp.rs:critical_path_profile::main
+     3,432 ( 0.00%)  ./malloc/./malloc/malloc.c:calloc [/usr/lib/x86_64-linux-gnu/libc.so.6]
+     3,303 ( 0.00%)  ./libio/./libio/iogetdelim.c:getdelim [/usr/lib/x86_64-linux-gnu/libc.so.6]
+     3,251 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/non_null.rs:<alloc::vec::Vec<T> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<T,I>>::from_iter
+     3,243 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/intrinsics/mod.rs:hashbrown::map::HashMap<K,V,S,A>::insert
+     3,221 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mut_ptr.rs:critical_path_profile::main
+     3,202 ( 0.00%)  /rust/deps/hashbrown-0.16.1/src/map.rs:autumn_harvest::dag::DagBuilder::build
+     3,202 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/intrinsics/mod.rs:<alloc::vec::Vec<T,A> as core::clone::Clone>::clone
+     3,201 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/mem/mod.rs:critical_path_profile::main
+     3,201 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/non_null.rs:<alloc::vec::into_iter::IntoIter<T,A> as core::iter::traits::iterator::Iterator>::try_fold
+     3,200 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/cell.rs:critical_path_profile::main
+     3,200 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/cmp.rs:core::str::pattern::StrSearcher::new
+     3,200 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/option.rs:critical_path_profile::main
+     3,200 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/str/traits.rs:core::str::iter::SplitInternal<P>::next_back
+     3,199 ( 0.00%)  /home/user/autumn-harvest/autumn-harvest/src/dag.rs:<alloc::vec::Vec<T> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<T,I>>::from_iter
+     3,199 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/iter/traits/iterator.rs:<alloc::vec::Vec<T> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<T,I>>::from_iter
+     3,120 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/cmp.rs:core::slice::sort::unstable::ipnsort
+     3,120 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/num/uint_macros.rs:core::ptr::drop_in_place<autumn_harvest::dag::DagTask>
+     3,096 ( 0.00%)  ./elf/../sysdeps/x86/dl-cacheinfo.h:intel_check_word.constprop.0 [/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2]
+     3,050 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/raw_vec/mod.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze
+     3,000 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/mem/mod.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze
+     2,840 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/vec/spec_from_iter_nested.rs:<alloc::vec::Vec<T> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<T,I>>::from_iter [/home/user/autumn-harvest/target/release/deps/critical_path_profile-3536a4d9e2ea239e]
+     2,800 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/cmp.rs:core::slice::sort::shared::smallsort::insertion_sort_shift_left
+     2,584 ( 0.00%)  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/vec/mod.rs:<alloc::vec::Vec<T> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<T,I>>::from_iter
+
+--------------------------------------------------------------------------------
+-- Auto-annotated source: /home/user/autumn-harvest/autumn-harvest/src/policy.rs
+--------------------------------------------------------------------------------
+Ir             
+
+-- line 344 ----------------------------------------
+    .                       failure_threshold: failure_threshold.max(1),
+    .                       window,
+    .                       cooldown,
+    .                   }
+    .               }
+    .           }
+    .           
+    .           /// Failure semantics for mapped nodes.
+1,600 ( 0.00%)  #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+    .           #[serde(rename_all = "snake_case")]
+    .           pub enum MapFailurePolicy {
+    .               /// The first instance failure fails the mapped node; downstream levels are
+    .               /// never dispatched.
+    .               ///
+    .               /// The failing instance's outcome wins even when later instances succeed.
+    .               /// Sibling instances already dispatched are **not** durably cancelled — the
+    .               /// node settles every instance before the DAG terminates, so the recorded
+-- line 360 ----------------------------------------
+-- line 392 ----------------------------------------
+    .           /// ## Examples
+    .           ///
+    .           /// ```rust
+    .           /// use autumn_harvest::policy::TriggerRule;
+    .           ///
+    .           /// let rule = TriggerRule::AllSuccess;
+    .           /// assert_eq!(rule, TriggerRule::default());
+    .           /// ```
+1,600 ( 0.00%)  #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+    .           pub enum TriggerRule {
+    .               /// Run when all upstream tasks succeeded (default).
+    .               #[default]
+    .               AllSuccess,
+    .               /// Run when all upstream tasks completed (any terminal state).
+    .               AllDone,
+    .               /// Run when at least one upstream succeeded.
+    .               OneSuccess,
+-- line 408 ----------------------------------------
+
+3,200 ( 0.00%)  <counts for unidentified lines in /home/user/autumn-harvest/autumn-harvest/src/policy.rs>
+
+--------------------------------------------------------------------------------
+-- Auto-annotated source: /home/user/autumn-harvest/autumn-harvest/benches/critical_path_profile.rs
+--------------------------------------------------------------------------------
+Ir               
+
+-- line 55 ----------------------------------------
+      .           use std::time::Duration;
+      .           
+      .           use autumn_harvest::critical_path::CriticalPathAnalyzer;
+      .           use autumn_harvest::dag::{DagBuilder, DagTaskRef};
+      .           
+      .           /// Reads `key` as a `usize`, using `default` only when the variable is
+      .           /// genuinely *absent*. A *present but malformed* value is a configuration
+      .           /// error, not silently substituted for the default.
+     30 ( 0.00%)  fn env_usize(key: &str, default: usize) -> usize {
+     21 ( 0.00%)      match std::env::var(key) {
+      .                   Ok(raw) => raw
+      .                       .parse()
+      .                       .unwrap_or_else(|e| panic!("{key}={raw:?} is not a valid usize: {e}")),
+      .                   Err(std::env::VarError::NotPresent) => default,
+      .                   Err(std::env::VarError::NotUnicode(raw)) => {
+      .                       panic!("{key}={} is not valid Unicode", raw.to_string_lossy())
+      .                   }
+      .               }
+     15 ( 0.00%)  }
+      .           
+      .           // Six distinct activity functions, cycled by column index within a stage, so
+      .           // the DAG carries a realistic small set of repeated named activities (a
+      .           // wide fan-out map stage in production runs the SAME handful of activity
+      .           // types across many parallel shards) rather than either one universal name
+      .           // or an unrealistic one-name-per-node cardinality that would never
+      .           // legitimately collide in `activity_durations`.
+      .           fn extract_shard() {}
+      .           fn transform_shard() {}
+      .           fn validate_shard() {}
+      .           fn enrich_shard() {}
+      .           fn load_shard() {}
+      .           fn checkpoint_shard() {}
+      .           
+      .           fn push_activity(builder: &mut DagBuilder, column: usize) -> DagTaskRef {
+ 20,080 ( 0.02%)      match column % 6 {
+      .                   0 => builder.activity(extract_shard),
+      .                   1 => builder.activity(transform_shard),
+      .                   2 => builder.activity(validate_shard),
+      .                   3 => builder.activity(enrich_shard),
+      .                   4 => builder.activity(load_shard),
+      .                   _ => builder.activity(checkpoint_shard),
+      .               }
+      .           }
+      .           
+      .           /// Build a `stages`-deep, `width`-wide dense barrier DAG: every node in stage
+      .           /// `s` (`s > 0`) depends on every node in stage `s - 1`.
+      .           fn build_dag(stages: usize, width: usize) -> autumn_harvest::dag::DagDefinition {
+      1 ( 0.00%)      let mut builder = DagBuilder::new();
+    229 ( 0.00%)  => /home/user/autumn-harvest/autumn-harvest/src/dag.rs:autumn_harvest::dag::DagBuilder::new (1x)
+      .               let mut previous_stage: Vec<DagTaskRef> = Vec::new();
+      .               for _stage in 0..stages {
+      .                   let mut current_stage = Vec::with_capacity(width);
+      .                   for column in 0..width {
+      .                       let mut node = push_activity(&mut builder, column);
+      .                       for upstream in &previous_stage {
+249,600 ( 0.24%)                  node = node.upstream(upstream);
+8,718,064 ( 8.25%)  => /home/user/autumn-harvest/autumn-harvest/src/dag.rs:autumn_harvest::dag::DagTaskRef::upstream (62,400x)
+      .                       }
+      .                       current_stage.push(node);
+      .                   }
+    120 ( 0.00%)          previous_stage = current_stage;
+      .               }
+      .               builder
+      1 ( 0.00%)          .build()
+8,053,465 ( 7.62%)  => /home/user/autumn-harvest/autumn-harvest/src/dag.rs:autumn_harvest::dag::DagBuilder::build (1x)
+      .                   .expect("dense barrier DAG must be a valid DAG (no cycle, all indices in range)")
+      .           }
+      .           
+      7 ( 0.00%)  fn main() {
+      6 ( 0.00%)      let stages = env_usize("CRITICAL_PATH_PROFILE_STAGES", 40);
+  3,192 ( 0.00%)  => /home/user/autumn-harvest/autumn-harvest/benches/critical_path_profile.rs:critical_path_profile::env_usize (1x)
+      6 ( 0.00%)      let width = env_usize("CRITICAL_PATH_PROFILE_WIDTH", 40);
+  3,187 ( 0.00%)  => /home/user/autumn-harvest/autumn-harvest/benches/critical_path_profile.rs:critical_path_profile::env_usize (1x)
+      6 ( 0.00%)      let reps = env_usize("CRITICAL_PATH_PROFILE_REPS", 50);
+  3,182 ( 0.00%)  => /home/user/autumn-harvest/autumn-harvest/benches/critical_path_profile.rs:critical_path_profile::env_usize (1x)
+      .           
+      .               assert!(
+      2 ( 0.00%)          stages > 0,
+      .                   "CRITICAL_PATH_PROFILE_STAGES must be at least 1, got 0"
+      .               );
+      .               assert!(
+      2 ( 0.00%)          width > 0,
+      .                   "CRITICAL_PATH_PROFILE_WIDTH must be at least 1, got 0"
+      .               );
+      .               // reps=0 would exit having measured nothing but DAG construction, and
+      .               // could be mistaken for a valid (implausibly fast) measurement.
+      .               assert!(
+      2 ( 0.00%)          reps > 0,
+      .                   "CRITICAL_PATH_PROFILE_REPS must be at least 1, got 0"
+      .               );
+      .           
+      .               let dag = build_dag(stages, width);
+      3 ( 0.00%)      let expected_tasks = stages * width;
+      2 ( 0.00%)      assert_eq!(
+      1 ( 0.00%)          dag.tasks().len(),
+      .                   expected_tasks,
+      .                   "build_dag(stages={stages}, width={width}) should produce {expected_tasks} tasks"
+      .               );
+      .           
+      .               // Five of the six activity types are mocked; `checkpoint_shard` is
+      .               // deliberately left unmocked so ~1/6 of tasks exercise the
+      .               // `default_duration` fallback (a miss) on every `analyze()` call --
+      .               // ordinary usage (an operator typically has historical timing data for
+      .               // some activity types, not all), and the shape `analyze`'s duration
+      .               // lookup must stay correct and non-regressive under (see
+      .               // `CriticalPathAnalyzer`'s `LINEAR_SCAN_CARDINALITY_LIMIT` doc comment).
+      1 ( 0.00%)      let analyzer = CriticalPathAnalyzer::new(dag)
+     33 ( 0.00%)  => /home/user/autumn-harvest/autumn-harvest/src/critical_path.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::new (1x)
+      .                   .with_default_duration(Duration::from_millis(100))
+      7 ( 0.00%)          .mock_duration("extract_shard", Duration::from_millis(120))
+ 98,818 ( 0.09%)  => /home/user/autumn-harvest/autumn-harvest/src/critical_path.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::mock_duration (1x)
+      7 ( 0.00%)          .mock_duration("transform_shard", Duration::from_millis(340))
+    458 ( 0.00%)  => /home/user/autumn-harvest/autumn-harvest/src/critical_path.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::mock_duration (1x)
+      7 ( 0.00%)          .mock_duration("validate_shard", Duration::from_millis(80))
+    412 ( 0.00%)  => /home/user/autumn-harvest/autumn-harvest/src/critical_path.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::mock_duration (1x)
+      7 ( 0.00%)          .mock_duration("enrich_shard", Duration::from_millis(210))
+  1,739 ( 0.00%)  => /home/user/autumn-harvest/autumn-harvest/src/critical_path.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::mock_duration (1x)
+      8 ( 0.00%)          .mock_duration("load_shard", Duration::from_millis(150));
+    412 ( 0.00%)  => /home/user/autumn-harvest/autumn-harvest/src/critical_path.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::mock_duration (1x)
+      .           
+      1 ( 0.00%)      let mut total_path_len = 0usize;
+      1 ( 0.00%)      for _ in 0..reps {
+    150 ( 0.00%)          let result = analyzer.analyze();
+84,642,911 (80.13%)  => /home/user/autumn-harvest/autumn-harvest/src/critical_path.rs:autumn_harvest::critical_path::CriticalPathAnalyzer::analyze (50x)
+      .                   // The dense barrier shape always terminates at a stage-(stages-1)
+      .                   // node, so the critical path always has exactly `stages` hops
+      .                   // (one winning node per stage) — self-checked so a change that
+      .                   // silently altered predecessor selection (not just its cost) would
+      .                   // fail this harness rather than produce a quietly-wrong "faster"
+      .                   // number.
+    100 ( 0.00%)          assert_eq!(
+      .                       result.path_indices.len(),
+      .                       stages,
+      .                       "a dense {stages}x{width} barrier DAG's critical path should visit exactly one node \
+      .                        per stage, got {} hops",
+      .                       result.path_indices.len()
+      .                   );
+    100 ( 0.00%)          total_path_len += result.path_indices.len();
+      .                   std::hint::black_box(&result);
+      .               }
+      .           
+     18 ( 0.00%)      println!(
+  3,265 ( 0.00%)  => /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/std/src/io/stdio.rs:std::io::stdio::_print (1x)
+      .                   "critical_path_profile: stages={stages} width={width} reps={reps} \
+      .                    total_tasks={expected_tasks} total_path_hops={total_path_len}"
+      .               );
+      8 ( 0.00%)  }
+
+126,263 ( 0.12%)  <counts for unidentified lines in /home/user/autumn-harvest/autumn-harvest/benches/critical_path_profile.rs>
+
+--------------------------------------------------------------------------------
+-- Auto-annotated source: /home/user/autumn-harvest/autumn-harvest/src/dag.rs
+--------------------------------------------------------------------------------
+Ir               
+
+-- line 146 ----------------------------------------
+      .               /// explicit alias (from [`DagTaskRef::input_from_aliased`]) or the
+      .               /// upstream's activity name (from [`DagTaskRef::input_from_all`]).
+      .               pub key: String,
+      .               /// The global task index of the upstream node whose output supplies the
+      .               /// value.
+      .               pub upstream_index: usize,
+      .           }
+      .           
+ 33,600 ( 0.03%)  #[derive(Clone)]
+      .           struct PendingDagTask {
+  3,200 ( 0.00%)      activity_name: String,
+394,869 ( 0.37%)  => /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/string.rs:<alloc::string::String as core::clone::Clone>::clone (1,600x)
+  3,200 ( 0.00%)      upstreams: Vec<usize>,
+      .               trigger_rule: TriggerRule,
+      .               retry_policy: Option<RetryPolicy>,
+      .               start_to_close: Option<Duration>,
+      .               queue: Option<String>,
+      .               map_upstream: Option<usize>,
+      .               map_failure_policy: MapFailurePolicy,
+      .               condition: Option<DagCondition>,
+      .               signal: Option<DagSignalGate>,
+-- line 165 ----------------------------------------
+-- line 455 ----------------------------------------
+      .           
+      .               /// Declare that this task depends on `upstream`.
+      .               ///
+      .               /// # Panics
+      .               ///
+      .               /// Panics if `self` and `upstream` were created by different
+      .               /// [`DagBuilder`] instances.
+      .               #[must_use]
+499,200 ( 0.47%)      pub fn upstream(self, upstream: &Self) -> Self {
+      .                   assert!(
+ 62,400 ( 0.06%)              Rc::ptr_eq(&self.tasks, &upstream.tasks),
+      .                       "cannot connect tasks from different DagBuilder instances"
+      .                   );
+187,200 ( 0.18%)          self.mutate(|task| {
+      .                       if !task.upstreams.contains(&upstream.index) {
+      .                           task.upstreams.push(upstream.index);
+      .                       }
+      .                   })
+561,600 ( 0.53%)      }
+      .           
+      .               /// Set a custom trigger rule for this task.
+      .               #[must_use]
+      .               pub fn trigger_rule(self, trigger_rule: TriggerRule) -> Self {
+      .                   self.mutate(|task| task.trigger_rule = trigger_rule)
+      .               }
+      .           
+      .               /// Attach a specific retry policy to this task.
+-- line 481 ----------------------------------------
+-- line 795 ----------------------------------------
+      .           #[derive(Debug, Clone)]
+      .           pub struct DagBuilder {
+      .               tasks: SharedTasks,
+      .               default_queue: Option<String>,
+      .           }
+      .           
+      .           impl Default for DagBuilder {
+      .               fn default() -> Self {
+      3 ( 0.00%)          Self {
+      .                       tasks: Rc::new(RefCell::new(Vec::new())),
+      .                       default_queue: None,
+      .                   }
+      .               }
+      .           }
+      .           
+      .           impl DagBuilder {
+      .               /// Create a new, empty DAG builder.
+-- line 811 ----------------------------------------
+-- line 813 ----------------------------------------
+      .               /// ## Examples
+      .               ///
+      .               /// ```rust
+      .               /// use autumn_harvest::dag::DagBuilder;
+      .               ///
+      .               /// let mut builder = DagBuilder::new();
+      .               /// ```
+      .               #[must_use]
+      3 ( 0.00%)      pub fn new() -> Self {
+      .                   Self::default()
+      4 ( 0.00%)      }
+      .           
+      .               /// Create a new DAG builder that schedules tasks on `queue` by default.
+      .               ///
+      .               /// ## Examples
+      .               ///
+      .               /// ```rust
+      .               /// use autumn_harvest::dag::DagBuilder;
+      .               ///
+-- line 831 ----------------------------------------
+-- line 851 ----------------------------------------
+      .               /// let mut builder = DagBuilder::new();
+      .               /// let task = builder.activity(my_activity);
+      .               /// ```
+      .               #[must_use]
+      .               pub fn activity<F>(&mut self, activity: F) -> DagTaskRef
+      .               where
+      .                   F: Copy + 'static,
+      .               {
+  6,400 ( 0.01%)          let activity_name = short_activity_name(type_name_of_val(&activity));
+1,205,526 ( 1.14%)  => /home/user/autumn-harvest/autumn-harvest/src/dag.rs:autumn_harvest::dag::short_activity_name (1,600x)
+      .                   let mut tasks = self.tasks.borrow_mut();
+      .                   let index = tasks.len();
+ 52,800 ( 0.05%)          tasks.push(PendingDagTask {
+  8,000 ( 0.01%)              activity_name,
+      .                       upstreams: Vec::new(),
+      .                       trigger_rule: TriggerRule::AllSuccess,
+  1,600 ( 0.00%)              retry_policy: None,
+      .                       start_to_close: None,
+      .                       queue: self.default_queue.clone(),
+      .                       map_upstream: None,
+      .                       map_failure_policy: MapFailurePolicy::FailFast,
+      .                       condition: None,
+      .                       signal: None,
+      .                       input_from: None,
+      .                       compensate: None,
+-- line 874 ----------------------------------------
+-- line 1007 ----------------------------------------
+      .               }
+      .           
+      .               /// Compile the current task graph into immutable execution metadata.
+      .               ///
+      .               /// # Errors
+      .               ///
+      .               /// Returns [`DagBuildError::CycleDetected`] if the task graph contains a
+      .               /// cycle.
+      9 ( 0.00%)      pub fn build(&self) -> Result<DagDefinition, DagBuildError> {
+      1 ( 0.00%)          let tasks = self.tasks.borrow().clone();
+1,069,977 ( 1.01%)  => /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/vec/mod.rs:<alloc::vec::Vec<T,A> as core::clone::Clone>::clone (1x)
+      .           
+      .                   validate_compensators(&tasks)?;
+      .           
+      .                   // Input-binding validation (issue #702).
+      .                   for task in &tasks {
+  4,800 ( 0.00%)              let Some(binding) = &task.input_from else {
+      .                           continue;
+      .                       };
+      .                       // A signal gate dispatches no activity, so a binding's value is
+      .                       // ignored — but its auto-added edge would silently make the gate wait
+      .                       // for that upstream. Reject it (like the map_upstream conflict below)
+      .                       // rather than adding a stray dependency the "ignored" contract hides.
+      .                       if task.signal.is_some() {
+      .                           return Err(DagBuildError::InputBindingOnGate {
+-- line 1030 ----------------------------------------
+-- line 1070 ----------------------------------------
+      .                           }
+      .                       }
+      .                   }
+      .           
+      .                   let mut indegree = vec![0_usize; tasks.len()];
+      .                   let mut outgoing = vec![Vec::<usize>::new(); tasks.len()];
+      .           
+      .                   for (task_index, task) in tasks.iter().enumerate() {
+  8,000 ( 0.01%)              indegree[task_index] = task.upstreams.len();
+ 62,400 ( 0.06%)              for &upstream_index in &task.upstreams {
+      .                           outgoing[upstream_index].push(task_index);
+      .                       }
+      .                   }
+      .           
+      .                   let mut ready: Vec<usize> = indegree
+      .                       .iter()
+      .                       .enumerate()
+  3,199 ( 0.00%)              .filter_map(|(index, degree)| (*degree == 0).then_some(index))
+      .                       .collect();
+      .                   let mut execution_levels = Vec::with_capacity(tasks.len());
+      .                   let mut visited = 0_usize;
+      .           
+     82 ( 0.00%)          while !ready.is_empty() {
+      .                       ready.sort_unstable();
+     40 ( 0.00%)              let current_level = ready;
+      .                       let mut next_level = Vec::new();
+      .           
+      .                       for task_index in &current_level {
+      .                           visited += 1;
+ 64,000 ( 0.06%)                  for &downstream in &outgoing[*task_index] {
+124,800 ( 0.12%)                      indegree[downstream] = indegree[downstream].saturating_sub(1);
+ 62,400 ( 0.06%)                      if indegree[downstream] == 0 {
+      .                                   next_level.push(downstream);
+      .                               }
+      .                           }
+      .                       }
+      .           
+      .                       execution_levels.push(current_level); // ⚡ Bolt: Removed unnecessary .clone() to avoid allocating a new vector per level.
+    160 ( 0.00%)              ready = next_level;
+      .                   }
+      .           
+      2 ( 0.00%)          if visited != tasks.len() {
+      .                       return Err(DagBuildError::CycleDetected);
+      .                   }
+      .           
+      .                   // Signal/timer gate isolation (issue #746). Originally a hard
+      .                   // requirement: the worker could persist only a homogeneous suspension
+      .                   // batch, so a gate's `WaitForSignal` must never share a level with a
+      .                   // sibling activity's `ScheduleActivity`. Issue #950 lifted that
+      .                   // constraint (`persist_mixed_suspension_batch` persists the mixed batch
+-- line 1119 ----------------------------------------
+-- line 1136 ----------------------------------------
+      .                               split.push(non_gates);
+      .                           }
+      .                           for gate_idx in gates {
+      .                               split.push(vec![gate_idx]);
+      .                           }
+      .                       }
+      .                       split
+      .                   } else {
+      5 ( 0.00%)              execution_levels
+      .                   };
+      .           
+     15 ( 0.00%)          Ok(DagDefinition {
+      1 ( 0.00%)              tasks: tasks.into_iter().map(Into::into).collect(),
+      4 ( 0.00%)              execution_levels,
+      .                   })
+      9 ( 0.00%)      }
+    197 ( 0.00%)  => ???:__rustc::__rust_dealloc (1x)
+      .           }
+      .           
+      .           /// Validate every node's compensator declaration (issue #780).
+      .           ///
+      .           /// A compensator must be dispatchable by name on the terminal-failure unwind,
+      .           /// and must stay distinguishable from every forward node in recorded history.
+      .           /// One compensator **shared by several nodes** is fine — the unwind envelope's
+      .           /// `dag_compensate` field disambiguates which node it is undoing.
+-- line 1159 ----------------------------------------
+-- line 1160 ----------------------------------------
+      .           fn validate_compensators(tasks: &[PendingDagTask]) -> Result<(), DagBuildError> {
+      .               // The node-identity set is built once and includes gates (whose identity
+      .               // is their signal name).
+      .               let node_names: std::collections::HashSet<&str> = tasks
+      .                   .iter()
+      .                   .map(|task| task.activity_name.as_str())
+      .                   .collect();
+      .               for task in tasks {
+  3,200 ( 0.00%)          let Some(compensator) = &task.compensate else {
+      .                       continue;
+      .                   };
+      .                   // A gate dispatches no activity, so it has no side effect to undo.
+      .                   if task.signal.is_some() {
+      .                       return Err(DagBuildError::CompensateOnGate {
+      .                           task: task.activity_name.clone(),
+      .                       });
+      .                   }
+-- line 1176 ----------------------------------------
+-- line 1215 ----------------------------------------
+      .                                   .unwrap_or(Value::Null),
+      .                           );
+      .                       }
+      .                       Value::Object(obj)
+      .                   }
+      .               }
+      .           }
+      .           
+ 16,000 ( 0.02%)  fn short_activity_name(type_name: &str) -> String {
+      .               type_name
+      .                   .rsplit("::")
+      .                   .next()
+      .                   .unwrap_or(type_name)
+      .                   .to_string()
+ 14,400 ( 0.01%)  }
+      .           
+      .           /// Execute a compiled unified DAG on the standard workflow execution path
+      .           /// (issue #256 Step 1, extended for signal gates in issue #746).
+      .           ///
+      .           /// This is the single source of truth for the `#[dag]` level walker. The
+      .           /// `#[dag]` macro builds the [`DagDefinition`] in a scoped block (so the
+      .           /// non-`Send` [`DagBuilder`] is dropped before any `.await`) and hands the
+      .           /// resulting `(levels, tasks)` here. Both the inlined `DagInfo::workflow_handler`
+-- line 1237 ----------------------------------------
+
+145,446 ( 0.14%)  <counts for unidentified lines in /home/user/autumn-harvest/autumn-harvest/src/dag.rs>
+
+--------------------------------------------------------------------------------
+-- User-annotated source: /home/user/autumn-harvest/autumn-harvest/src/critical_path.rs
+--------------------------------------------------------------------------------
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+@@ WARNING @@ WARNING @@ WARNING @@ WARNING @@ WARNING @@ WARNING @@ WARNING @@
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+@ Source file '/home/user/autumn-harvest/autumn-harvest/src/critical_path.rs' is more recent than input file 'cg_critpath_dbg.out'.
+@ Annotations may not be correct.
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
+Ir                 
+
+-- line 46 ----------------------------------------
+        .               dag: DagDefinition,
+        .               activity_durations: HashMap<String, Duration>,
+        .               default_duration: Duration,
+        .           }
+        .           
+        .           impl CriticalPathAnalyzer {
+        .               /// Create a new analyzer for the given DAG definition.
+        .               #[must_use]
+        5 ( 0.00%)      pub fn new(dag: DagDefinition) -> Self {
+       14 ( 0.00%)          Self {
+        .                       dag,
+        .                       activity_durations: HashMap::new(),
+        .                       default_duration: Duration::from_secs(1),
+        .                   }
+        5 ( 0.00%)      }
+        .           
+        .               /// Set a default duration for activities whose duration is not explicitly mocked.
+        .               #[must_use]
+        .               pub const fn with_default_duration(mut self, duration: Duration) -> Self {
+        2 ( 0.00%)          self.default_duration = duration;
+        .                   self
+        .               }
+        .           
+        .               /// Mock the expected duration of an activity by name.
+        .               #[must_use]
+       50 ( 0.00%)      pub fn mock_duration(mut self, name: &str, duration: Duration) -> Self {
+        .                   self.activity_durations.insert(name.to_string(), duration);
+       70 ( 0.00%)          self
+       45 ( 0.00%)      }
+        .           
+        .               /// Calculate the critical path of the DAG.
+        .               ///
+        .               /// The critical path is the longest path through the graph from any source node
+        .               /// to any sink node, which dictates the minimum possible execution time of the entire DAG.
+        .               #[must_use]
+      350 ( 0.00%)      pub fn analyze(&self) -> CriticalPathResult {
+        .                   let tasks = self.dag.tasks();
+        .                   let levels = self.dag.execution_levels();
+        .           
+      100 ( 0.00%)          if tasks.is_empty() {
+        .                       return CriticalPathResult {
+        .                           total_duration: Duration::ZERO,
+        .                           path_indices: Vec::new(),
+        .                           path_names: Vec::new(),
+        .                       };
+        .                   }
+        .           
+        .                   let mut distances = vec![Duration::ZERO; tasks.len()];
+-- line 93 ----------------------------------------
+-- line 177 ----------------------------------------
+        .                   // MIN_LOOKUPS_TO_AMORTIZE_TABLE_BUILD` rules out the fast path with
+        .                   // no scan at all. For a large DAG that clears that bar but turns
+        .                   // out to be override-heavy (few tasks actually need a lookup), the
+        .                   // pre-pass still runs and still costs O(tasks) -- a real, accepted
+        .                   // cost, but a bounded one: it is one cheap check per task, alongside
+        .                   // work the main DP loop below (upstream-distance comparisons,
+        .                   // `Duration` arithmetic) already pays per task regardless, so it
+        .                   // can never dominate `analyze`'s total cost for any DAG large
+      350 ( 0.00%)          // enough for the difference to matter.
+        .                   //
+        .                   // `HashMap::iter()`'s order is randomized per process (`RandomState`),
+        .                   // so collecting it directly would make the linear scan's hit
+        .                   // position -- and therefore instruction counts -- vary run to run
+        .                   // for reasons having nothing to do with the code, undermining the
+        .                   // deterministic-counter evidence this optimization is justified by.
+        .                   // Sorting by name fixes the scan order so repeated measurements of
+        .                   // the same binary are comparable.
+-- line 193 ----------------------------------------
+-- line 194 ----------------------------------------
+        .                   let duration_lookup: Option<Vec<(&str, Duration)>> = (self.activity_durations.len()
+        .                       <= LINEAR_SCAN_CARDINALITY_LIMIT
+        .                       && tasks.len() >= MIN_LOOKUPS_TO_AMORTIZE_TABLE_BUILD)
+        .                       .then(|| {
+        .                           tasks
+        .                               .iter()
+        .                               .filter(|task| task.start_to_close.is_none())
+        .                               .count()
+      100 ( 0.00%)              })
+        .                       .filter(|&lookups_needed| lookups_needed >= MIN_LOOKUPS_TO_AMORTIZE_TABLE_BUILD)
+        .                       .map(|_| {
+        .                           let mut lookup: Vec<(&str, Duration)> = self
+   88,000 ( 0.08%)                      .activity_durations
+  400,000 ( 0.38%)                      .iter()
+   80,000 ( 0.08%)                      .map(|(name, &duration)| (name.as_str(), duration))
+        .                               .collect();
+        .                           lookup.sort_unstable_by_key(|&(name, _)| name);
+        .                           lookup
+        .                       });
+        .           
+        .                   for level in levels {
+        .                       for &task_index in level {
+        .                           let task = &tasks[task_index];
+-- line 216 ----------------------------------------
+-- line 221 ----------------------------------------
+        .                                           .get(&task.activity_name)
+        .                                           .copied()
+        .                                           .unwrap_or(self.default_duration)
+        .                                   },
+        .                                   |lookup| {
+        .                                       lookup
+        .                                           .iter()
+        .                                           .find(|(name, _)| *name == task.activity_name)
+3,120,000 ( 2.95%)                                  .map_or(self.default_duration, |&(_, duration)| duration)
+3,120,000 ( 2.95%)                          },
+        .                               )
+        .                           });
+2,496,000 ( 2.36%)  
+  156,000 ( 0.15%)                  // Find the maximum distance among upstreams
+        .                           let mut max_upstream_dist = Duration::ZERO;
+        .                           let mut best_pred = None;
+        .           
+        .                           for &up_idx in &task.upstreams {
+        .                               is_sink[up_idx] = false;
+  160,000 ( 0.15%)                      if distances[up_idx] >= max_upstream_dist {
+  160,000 ( 0.15%)                          // >= because we want the last one in case of tie, or simply just >
+        .                                   // Actually, just > is fine.
+        .                                   if distances[up_idx] > max_upstream_dist || best_pred.is_none() {
+        .                                       max_upstream_dist = distances[up_idx];
+        .                                       best_pred = Some(up_idx);
+        .                                   }
+        .                               }
+3,120,000 ( 2.95%)                  }
+3,120,000 ( 2.95%)  
+        .                           distances[task_index] = max_upstream_dist + duration;
+        .                           predecessors[task_index] = best_pred;
+        .                       }
+        .                   }
+        .           
+        .                   // Find the sink node with the maximum total distance
+        .                   let mut max_dist = Duration::ZERO;
+        .                   let mut end_node = None;
+  167,600 ( 0.16%)  
+        .                   for (i, &dist) in distances.iter().enumerate() {
+        .                       if is_sink[i] && (dist > max_dist || end_node.is_none()) {
+        .                           max_dist = dist;
+        .                           end_node = Some(i);
+        .                       }
+        .                   }
+        .           
+        .                   let mut path_indices = Vec::new();
+   12,100 ( 0.01%)          let mut current = end_node;
+        .           
+    2,000 ( 0.00%)          while let Some(node) = current {
+        .                       path_indices.push(node);
+        .                       current = predecessors[node];
+        .                   }
+        .           
+        .                   path_indices.reverse();
+        .           
+   14,000 ( 0.01%)          let path_names = path_indices
+  461,628 ( 0.44%)  => /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/string.rs:<alloc::string::String as core::clone::Clone>::clone (2,000x)
+        .                       .iter()
+        .                       .map(|&i| tasks[i].activity_name.clone())
+      350 ( 0.00%)              .collect();
+        .           
+      250 ( 0.00%)          CriticalPathResult {
+        .                       total_duration: max_dist,
+        .                       path_indices,
+      450 ( 0.00%)              path_names,
+        .                   }
+        .               }
+        .           }
+        .           
+        .           #[cfg(test)]
+        .           mod tests {
+        .               use super::*;
+        .               use crate::dag::DagBuilder;
+-- line 292 ----------------------------------------
+
+  842,850 ( 0.80%)  <counts for unidentified lines in /home/user/autumn-harvest/autumn-harvest/src/critical_path.rs>
+
+--------------------------------------------------------------------------------
+The following files chosen for auto-annotation could not be found:
+--------------------------------------------------------------------------------
+  ./elf/../sysdeps/generic/dl-new-hash.h
+  ./elf/../sysdeps/x86/dl-cacheinfo.h
+  ./elf/../sysdeps/x86_64/dl-machine.h
+  ./elf/./elf/dl-lookup.c
+  ./elf/./elf/dl-reloc.c
+  ./elf/./elf/dl-tunables.c
+  ./elf/./elf/dl-tunables.h
+  ./elf/./elf/dl-version.c
+  ./elf/./elf/do-rel.h
+  ./libio/./libio/genops.c
+  ./libio/./libio/iogetdelim.c
+  ./malloc/../string/bits/string_fortified.h
+  ./malloc/./malloc/arena.c
+  ./malloc/./malloc/malloc.c
+  ./stdio-common/./stdio-common/vfscanf-internal.c
+  ./stdlib/../stdlib/strtol_l.c
+  ./stdlib/./stdlib/getenv.c
+  ./string/../sysdeps/x86_64/multiarch/../multiarch/strcmp-sse2.S
+  ./string/../sysdeps/x86_64/multiarch/memcmp-avx2-movbe.S
+  ./string/../sysdeps/x86_64/multiarch/memmove-vec-unaligned-erms.S
+  ./string/../sysdeps/x86_64/multiarch/memset-vec-unaligned-erms.S
+  ./string/../sysdeps/x86_64/multiarch/strcmp-avx2.S
+  /rust/deps/hashbrown-0.16.1/src/control/bitmask.rs
+  /rust/deps/hashbrown-0.16.1/src/control/tag.rs
+  /rust/deps/hashbrown-0.16.1/src/map.rs
+  /rust/deps/hashbrown-0.16.1/src/raw/mod.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/alloc.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/raw_vec/mod.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/slice.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/string.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/vec/mod.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/alloc/src/vec/spec_from_iter_nested.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/../../stdarch/crates/core_arch/src/x86/sse2.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/alloc/layout.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/cell.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/cmp.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/hash/mod.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/hash/sip.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/intrinsics/mod.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/iter/adapters/filter.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/iter/adapters/take.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/iter/range.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/iter/traits/accum.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/iter/traits/iterator.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/mem/maybe_uninit.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/mem/mod.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/num/uint_macros.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/option.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/profiling.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mod.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/mut_ptr.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/ptr/non_null.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/result.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/cmp.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/index.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/iter.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/iter/macros.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/mod.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/sort/shared/mod.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/slice/sort/shared/smallsort.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/str/iter.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/str/mod.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/str/pattern.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/str/traits.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/core/src/time.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/std/src/alloc.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/std/src/hash/random.rs
+  /rustc/e408947bfd200af42db322daf0fadfe7e26d3bd1/library/std/src/sys/alloc/unix.rs
+
+--------------------------------------------------------------------------------
+Ir                  
+--------------------------------------------------------------------------------
+18,274,098 (17.30%)  events annotated
+

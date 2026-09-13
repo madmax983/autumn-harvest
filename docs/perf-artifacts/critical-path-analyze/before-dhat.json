@@ -1,0 +1,479 @@
+{"dhatFileVersion":2
+,"mode":"heap","verb":"Allocated"
+,"bklt":true,"bkacc":true
+,"tu":"instrs","Mtu":"Minstr"
+,"tuth":500
+,"cmd":"/home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a"
+,"pid":13175
+,"te":100848912
+,"tg":14569058
+,"pps":
+ [{"tb":472,"tbk":1
+  ,"tl":158058
+  ,"mb":472,"mbk":1
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":2871,"wb":1342
+  ,"acc":[194,-3,143,-4,0,-8,188,-8,86,-8,12,-8,17,-16,12,-8,22,-8,13,-8,10,-16,1,-8,8,-8,3,-4,14,13,-3,5,-8,0,-2,1,-6,0,-8,4,-8,7,-8,0,-16,1,-16,0,-4,9,-20,0,-8,15,-4,4,-4,3,-8,5,-88,1,-136,0,-8,1]
+  ,"fs":[1,2,3,4,5,6]
+  }
+ ,{"tb":360,"tbk":2
+  ,"tl":157147
+  ,"mb":240,"mbk":1
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":6257,"wb":4988
+  ,"fs":[1,7,8,5,6]
+  }
+ ,{"tb":1024,"tbk":1
+  ,"tl":157198
+  ,"mb":1024,"mbk":1
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":9643,"wb":5120
+  ,"acc":[20,-722,15,-301,13]
+  ,"fs":[1,9,10,11,12,8,5,6]
+  }
+ ,{"tb":32,"tbk":1
+  ,"tl":326
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":32,"wb":32
+  ,"acc":[-32,2]
+  ,"fs":[13,14,5,6]
+  }
+ ,{"tb":152,"tbk":1
+  ,"tl":296
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":24,"wb":16
+  ,"acc":[-8,3,-8,2,-136,0]
+  ,"fs":[15,16,17,18,5,6]
+  }
+ ,{"tb":32,"tbk":1
+  ,"tl":212
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":0,"wb":32
+  ,"acc":[-32,1]
+  ,"fs":[13,19,18,5,6]
+  }
+ ,{"tb":4,"tbk":1
+  ,"tl":100375831
+  ,"mb":0,"mbk":0
+  ,"gb":4,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":0,"wb":4
+  ,"acc":[-4,1]
+  ,"fs":[1,20,21,6]
+  }
+ ,{"tb":544,"tbk":1
+  ,"tl":100380899
+  ,"mb":0,"mbk":0
+  ,"gb":544,"gbk":1
+  ,"eb":544,"ebk":1
+  ,"rb":76,"wb":60
+  ,"acc":[-16,3,-80,0,-40,2,-402,0,-2,4,-4,0]
+  ,"fs":[1,22,21,6]
+  }
+ ,{"tb":48,"tbk":1
+  ,"tl":14491985
+  ,"mb":0,"mbk":0
+  ,"gb":48,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":2086640,"wb":1062640
+  ,"acc":[-8,6403,-8,3,-8,65535,-8,1622,-8,64024,-8,65535]
+  ,"fs":[1,23,24,25,26,27,6]
+  }
+ ,{"tb":640,"tbk":1
+  ,"tl":284614
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":25920,"wb":640
+  ,"acc":[-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41,-8,42,-8,41]
+  ,"fs":[1,28,25,26,27,6]
+  }
+ ,{"tb":3640,"tbk":280
+  ,"tl":2712424039
+  ,"mb":3640,"mbk":280
+  ,"gb":3640,"gbk":280
+  ,"eb":0,"ebk":0
+  ,"rb":3640,"wb":3640
+  ,"acc":[-13,560]
+  ,"fs":[1,29,30,25,26,27,6]
+  }
+ ,{"tb":1211232,"tbk":10
+  ,"tl":14491005
+  ,"mb":606208,"mbk":1
+  ,"gb":606208,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":2593504,"wb":1702624
+  ,"fs":[1,31,32,33,25,26,27,6]
+  }
+ ,{"tb":4200,"tbk":280
+  ,"tl":2710765024
+  ,"mb":4200,"mbk":280
+  ,"gb":4200,"gbk":280
+  ,"eb":0,"ebk":0
+  ,"rb":4200,"wb":4200
+  ,"acc":[-15,560]
+  ,"fs":[1,29,34,25,26,27,6]
+  }
+ ,{"tb":3920,"tbk":280
+  ,"tl":2709117021
+  ,"mb":3920,"mbk":280
+  ,"gb":3920,"gbk":280
+  ,"eb":0,"ebk":0
+  ,"rb":3920,"wb":3920
+  ,"acc":[-14,560]
+  ,"fs":[1,29,35,25,26,27,6]
+  }
+ ,{"tb":3360,"tbk":280
+  ,"tl":2707467102
+  ,"mb":3360,"mbk":280
+  ,"gb":3360,"gbk":280
+  ,"eb":0,"ebk":0
+  ,"rb":3360,"wb":3360
+  ,"acc":[-12,560]
+  ,"fs":[1,29,36,25,26,27,6]
+  }
+ ,{"tb":2400,"tbk":240
+  ,"tl":2323525653
+  ,"mb":2400,"mbk":240
+  ,"gb":2400,"gbk":240
+  ,"eb":0,"ebk":0
+  ,"rb":2400,"wb":2400
+  ,"acc":[-10,480]
+  ,"fs":[1,29,37,25,26,27,6]
+  }
+ ,{"tb":3840,"tbk":240
+  ,"tl":2322111012
+  ,"mb":3840,"mbk":240
+  ,"gb":3840,"gbk":240
+  ,"eb":0,"ebk":0
+  ,"rb":3840,"wb":3840
+  ,"acc":[-16,480]
+  ,"fs":[1,29,38,25,26,27,6]
+  }
+ ,{"tb":24960,"tbk":39
+  ,"tl":23615570
+  ,"mb":1280,"mbk":2
+  ,"gb":640,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":985280,"wb":24960
+  ,"acc":[-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559,-8,1598,-8,1559]
+  ,"fs":[1,39,25,26,27,6]
+  }
+ ,{"tb":1547520,"tbk":7800
+  ,"tl":14913391581
+  ,"mb":798720,"mbk":1560
+  ,"gb":798720,"gbk":1560
+  ,"eb":0,"ebk":0
+  ,"rb":10982400,"wb":1248000
+  ,"fs":[1,40,41,42,43,25,26,27,6]
+  }
+ ,{"tb":473600,"tbk":1
+  ,"tl":90720802
+  ,"mb":473600,"mbk":1
+  ,"gb":473600,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":5167360,"wb":897600
+  ,"fs":[1,44,45,46,25,26,27,6]
+  }
+ ,{"tb":21360,"tbk":1600
+  ,"tl":144287753668
+  ,"mb":21360,"mbk":1600
+  ,"gb":21360,"gbk":1600
+  ,"eb":0,"ebk":0
+  ,"rb":969920,"wb":21360
+  ,"fs":[1,47,48,45,46,25,26,27,6]
+  }
+ ,{"tb":499200,"tbk":1560
+  ,"tl":140666413953
+  ,"mb":499200,"mbk":1560
+  ,"gb":499200,"gbk":1560
+  ,"eb":0,"ebk":0
+  ,"rb":50419200,"wb":499200
+  ,"acc":[-320,28048]
+  ,"fs":[1,49,45,46,25,26,27,6]
+  }
+ ,{"tb":34832,"tbk":1
+  ,"tl":543562
+  ,"mb":34832,"mbk":1
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":51110,"wb":2172
+  ,"fs":[1,50,51,52,46,25,26,27,6]
+  }
+ ,{"tb":12800,"tbk":1
+  ,"tl":3202546
+  ,"mb":0,"mbk":0
+  ,"gb":12800,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":512000,"wb":512000
+  ,"fs":[15,53,46,25,26,27,6]
+  }
+ ,{"tb":38400,"tbk":1
+  ,"tl":3202432
+  ,"mb":38400,"mbk":1
+  ,"gb":38400,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":1672960,"wb":662400
+  ,"fs":[1,54,55,46,25,26,27,6]
+  }
+ ,{"tb":1547520,"tbk":7800
+  ,"tl":3349974420
+  ,"mb":798720,"mbk":1560
+  ,"gb":798720,"gbk":1560
+  ,"eb":0,"ebk":0
+  ,"rb":1248000,"wb":1248000
+  ,"fs":[1,40,41,56,46,25,26,27,6]
+  }
+ ,{"tb":992,"tbk":5
+  ,"tl":87173843
+  ,"mb":512,"mbk":1
+  ,"gb":512,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":17120,"wb":800
+  ,"fs":[1,57,58,46,25,26,27,6]
+  }
+ ,{"tb":38400,"tbk":1
+  ,"tl":87163125
+  ,"mb":38400,"mbk":1
+  ,"gb":38400,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":32640,"wb":960
+  ,"fs":[1,59,46,25,26,27,6]
+  }
+ ,{"tb":38688,"tbk":195
+  ,"tl":3381594840
+  ,"mb":19968,"mbk":39
+  ,"gb":19968,"gbk":39
+  ,"eb":0,"ebk":0
+  ,"rb":667680,"wb":31200
+  ,"fs":[1,40,41,60,46,25,26,27,6]
+  }
+ ,{"tb":13,"tbk":1
+  ,"tl":85871443
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":182976,"wb":13
+  ,"acc":[14203,14153,-6,14103,-5,14003]
+  ,"fs":[1,61,62,25,26,27,6]
+  }
+ ,{"tb":180,"tbk":1
+  ,"tl":2680
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":252,"wb":134
+  ,"acc":[-8,2,-16,3,-12,2,-4,1,-40,0,-8,2,-16,3,-12,2,-4,1,-8,2,-16,3,-12,2,-4,1,6,5,3,8,-12,6,-2,5,4,2]
+  ,"fs":[1,50,63,64,65,62,25,26,27,6]
+  }
+ ,{"tb":15,"tbk":1
+  ,"tl":85870895
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":210930,"wb":15
+  ,"acc":[14203,-7,14103,-7,14003]
+  ,"fs":[1,61,66,25,26,27,6]
+  }
+ ,{"tb":14,"tbk":1
+  ,"tl":85870240
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":197378,"wb":14
+  ,"acc":[14303,-7,14153,-6,14003]
+  ,"fs":[1,61,67,25,26,27,6]
+  }
+ ,{"tb":12,"tbk":1
+  ,"tl":85869795
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":169412,"wb":12
+  ,"acc":[14302,14202,-6,14152,-4,14002]
+  ,"fs":[1,61,68,25,26,27,6]
+  }
+ ,{"tb":344,"tbk":1
+  ,"tl":85869453
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":7981,"wb":226
+  ,"acc":[-8,2,-8,52,-20,51,-4,1,-8,2,-8,52,-20,51,-84,0,-8,2,-8,52,-20,51,-4,1,-40,0,-8,2,-8,52,-20,51,-4,0,-8,2,-8,52,-20,51,-4,1,54,55,53,56,-2,54,57,59,-8,57,7,6,-2,5,-3,4,2]
+  ,"fs":[1,50,63,64,65,68,25,26,27,6]
+  }
+ ,{"tb":10,"tbk":1
+  ,"tl":85868187
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":121810,"wb":10
+  ,"acc":[12402,-7,12202,-2,12002]
+  ,"fs":[1,61,69,25,26,27,6]
+  }
+ ,{"tb":1280000,"tbk":50
+  ,"tl":85589550
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":35272000,"wb":1920000
+  ,"fs":[1,70,71,25,26,27,6]
+  }
+ ,{"tb":1280000,"tbk":50
+  ,"tl":85391050
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":18000,"wb":1280000
+  ,"fs":[15,72,71,25,26,27,6]
+  }
+ ,{"tb":8000,"tbk":50
+  ,"tl":85082450
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":3488800,"wb":16600
+  ,"acc":[-8,14250,-8,14714,-12,14150,-4,100,-8,14300,-8,764,-12,14150,-4,100,-8,12300,-8,52300,-12,12150,-4,100,-8,14300,-8,40300,-12,14250,-4,200,-8,14150,-8,26150,-12,14150,-4,100]
+  ,"fs":[1,73,74,71,25,26,27,6]
+  }
+ ,{"tb":80000,"tbk":50
+  ,"tl":23665950
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":80000,"wb":3200000
+  ,"fs":[1,75,71,25,26,27,6]
+  }
+ ,{"tb":49600,"tbk":250
+  ,"tl":466100
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":56000,"wb":56000
+  ,"fs":[1,40,41,76,71,25,26,27,6]
+  }
+ ,{"tb":48000,"tbk":50
+  ,"tl":472150
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":32000,"wb":48000
+  ,"acc":[-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50,-16,100,-8,50]
+  ,"fs":[1,77,78,71,25,26,27,6]
+  }
+ ,{"tb":30000,"tbk":2000
+  ,"tl":9699400
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":0,"wb":30000
+  ,"acc":[-15,2000]
+  ,"fs":[1,47,79,78,71,25,26,27,6]
+  }
+ ,{"tb":1024,"tbk":1
+  ,"tl":193464
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":97,"wb":88
+  ,"acc":[-29,2,3,2,3,-6,2,3,2,3,-5,2,3,2,3,-12,2,3,-3,2,3,-16,2,3,-5,2,-936,0]
+  ,"fs":[1,80,81,82,83,84,25,26,27,6]
+  }
+ ]
+,"ftbl":
+ ["[root]"
+ ,"0x4846828: malloc (in /usr/libexec/valgrind/vgpreload_dhat-amd64-linux.so)"
+ ,"0x4916E7E: __fopen_internal (iofopen.c:65)"
+ ,"0x4916E7E: fopen@@GLIBC_2.2.5 (iofopen.c:86)"
+ ,"0x492F0B5: pthread_getattr_np@@GLIBC_2.32 (pthread_getattr_np.c:85)"
+ ,"0x15EFDD: std::rt::lang_start_internal (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x1487F4: main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x4917D84: getdelim (iogetdelim.c:65)"
+ ,"0x492F20E: pthread_getattr_np@@GLIBC_2.32 (pthread_getattr_np.c:122)"
+ ,"0x49161B4: _IO_file_doallocate (filedoalloc.c:101)"
+ ,"0x4926523: _IO_doallocbuf (genops.c:347)"
+ ,"0x4923883: _IO_file_underflow@@GLIBC_2.2.5 (fileops.c:486)"
+ ,"0x4917E0F: getdelim (iogetdelim.c:77)"
+ ,"0x484DB80: realloc (in /usr/libexec/valgrind/vgpreload_dhat-amd64-linux.so)"
+ ,"0x492EF79: pthread_getattr_np@@GLIBC_2.32 (pthread_getattr_np.c:180)"
+ ,"0x484D953: calloc (in /usr/libexec/valgrind/vgpreload_dhat-amd64-linux.so)"
+ ,"0x492AE7A: __pthread_attr_extension (pthread_attr_extension.c:28)"
+ ,"0x492B1BF: pthread_attr_setaffinity_np@@GLIBC_2.32 (pthread_attr_setaffinity.c:45)"
+ ,"0x492F007: pthread_getattr_np@@GLIBC_2.32 (pthread_getattr_np.c:194)"
+ ,"0x492B1D8: pthread_attr_setaffinity_np@@GLIBC_2.32 (pthread_attr_setaffinity.c:51)"
+ ,"0x1607B7: std::sys::pal::unix::stack_overflow::thread_info::set_current_info (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x15F10E: std::rt::lang_start_internal (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x1609BC: std::sys::pal::unix::stack_overflow::thread_info::set_current_info (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14EE78: autumn_harvest::dag::DagBuilder::new (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14638E: critical_path_profile::main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x148812: std::sys::backtrace::__rust_begin_short_backtrace (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x148808: std::rt::lang_start::{{closure}} (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x15F1D5: std::rt::lang_start_internal (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x1463F2: critical_path_profile::main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x150C51: autumn_harvest::dag::short_activity_name (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14652E: critical_path_profile::main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x149979: alloc::raw_vec::RawVecInner<A>::finish_grow (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x1498B9: alloc::raw_vec::RawVec<T,A>::grow_one (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x1466BA: critical_path_profile::main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x146BCE: critical_path_profile::main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14687E: critical_path_profile::main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x146A26: critical_path_profile::main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x1466D6: critical_path_profile::main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x146D76: critical_path_profile::main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x147077: critical_path_profile::main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x152989: alloc::raw_vec::RawVecInner<A>::finish_grow (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x1528C9: alloc::raw_vec::RawVec<T,A>::grow_one (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x150AAF: autumn_harvest::dag::DagTaskRef::upstream (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x146F5E: critical_path_profile::main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14E496: <alloc::vec::Vec<T,A> as core::clone::Clone>::clone (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14EF2B: autumn_harvest::dag::DagBuilder::build (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x147098: critical_path_profile::main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x18D4EE: <alloc::string::String as core::clone::Clone>::clone (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14E515: <alloc::vec::Vec<T,A> as core::clone::Clone>::clone (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14E56A: <alloc::vec::Vec<T,A> as core::clone::Clone>::clone (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14A327: hashbrown::raw::RawTableInner::fallible_with_capacity (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14A9B1: hashbrown::raw::RawTable<T,A>::reserve_rehash (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x15028C: autumn_harvest::dag::DagBuilder::build (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14FC8A: autumn_harvest::dag::DagBuilder::build (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14E044: <T as alloc::vec::spec_from_elem::SpecFromElem>::from_elem (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14F0D6: autumn_harvest::dag::DagBuilder::build (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14F6AC: autumn_harvest::dag::DagBuilder::build (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14D915: <alloc::vec::Vec<T> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<T,I>>::from_iter (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14F120: autumn_harvest::dag::DagBuilder::build (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14F6C6: autumn_harvest::dag::DagBuilder::build (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14F8BE: autumn_harvest::dag::DagBuilder::build (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14BF85: autumn_harvest::critical_path::CriticalPathAnalyzer::mock_duration (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x1471FF: critical_path_profile::main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14A412: hashbrown::raw::RawTable<T,A>::reserve_rehash (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x149FD2: hashbrown::map::HashMap<K,V,S,A>::insert (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14BFCF: autumn_harvest::critical_path::CriticalPathAnalyzer::mock_duration (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14722A: critical_path_profile::main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x147255: critical_path_profile::main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x147280: critical_path_profile::main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x1472AE: critical_path_profile::main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14C1C1: autumn_harvest::critical_path::CriticalPathAnalyzer::analyze (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x147301: critical_path_profile::main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14C20A: autumn_harvest::critical_path::CriticalPathAnalyzer::analyze (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14D75D: <alloc::vec::Vec<T> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<T,I>>::from_iter (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14C379: autumn_harvest::critical_path::CriticalPathAnalyzer::analyze (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14C8A4: autumn_harvest::critical_path::CriticalPathAnalyzer::analyze (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14CC26: autumn_harvest::critical_path::CriticalPathAnalyzer::analyze (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14D564: <alloc::vec::Vec<T> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<T,I>>::from_iter (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14CDAE: autumn_harvest::critical_path::CriticalPathAnalyzer::analyze (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14D5B3: <alloc::vec::Vec<T> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<T,I>>::from_iter (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x1643ED: std::sync::once::Once::call_once_force::{{closure}} (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x162456: std::sys::sync::once::futex::Once::call (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x164864: std::sync::once_lock::OnceLock<T>::initialize (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x15E91C: std::io::stdio::_print (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ,"0x14746C: critical_path_profile::main (in /home/user/autumn-harvest/target/release/deps/critical_path_profile-1f551a1c480b2e4a)"
+ ]
+}
