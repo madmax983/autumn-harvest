@@ -410,16 +410,56 @@ pub const NEWER_TURN_QUERY: &str = "SELECT count(*) FROM harvest_events \
      AND json_extract(event_json, '$.type') = 'ActivityScheduled' \
      AND json_extract(event_json, '$.data.name') = ?3";
 
-/// How many events after `seq` this daemon cannot read at all.
+/// How many events after `seq` this daemon cannot classify.
 ///
-/// [`NEWER_TURN_QUERY`] needs a row to be JSON to say what the row is. A row
-/// that is not JSON carries no readable kind, so it can be a model turn
-/// nothing can name.
+/// [`NEWER_TURN_QUERY`] must READ a row to say the row is a model turn. A row
+/// it cannot classify can be a turn it cannot see, so such a row is COUNTED
+/// here rather than passed over in silence.
 ///
-/// `json_valid` answers for every row and aborts nothing, so a corrupt row is
-/// COUNTED here rather than skipped in silence.
-pub const UNREADABLE_AFTER_QUERY: &str = "SELECT count(*) FROM harvest_events \
-     WHERE exec_id = ?1 AND seq > ?2 AND NOT json_valid(event_json)";
+/// Four shapes of damage reach that state, and a count of invalid JSON alone
+/// catches one of them:
+///
+/// A row that is not JSON carries no readable kind at all.
+///
+/// A row whose `type` is absent, or is not a string, carries no kind either.
+///
+/// A row of kind `ActivityScheduled` with no readable `name` is a schedule
+/// this daemon cannot name. The turn test above needs that name, so the row
+/// evades it while remaining valid JSON.
+///
+/// A row that repeats `type`, `data` or `name` is read two ways. `SQLite`
+/// takes the FIRST value of a repeated key, and the Rust reader takes the
+/// LAST. One such row therefore reads as an ordinary tool schedule here and
+/// as a model turn in the engine.
+///
+/// Every test sits inside a `CASE`, which fixes the order of evaluation. The
+/// validity test is first, because `json_type` over a row that is not JSON
+/// aborts the whole statement.
+///
+/// The `json_each` counts are correlated, and the `seq >` seek bounds them.
+/// They read the rows after the reply in hand, which for a parked session are
+/// the tool events of the current turn.
+///
+/// One row stays outside this count: a row whose `exec_id` is in the wrong
+/// storage class. A `BLOB` never compares equal to the `TEXT` parameter, so
+/// the row belongs to no execution this daemon can read. Matching by bytes
+/// instead takes the read out of the `(exec_id, seq)` primary key. Both
+/// evidence counts then scan the whole event log, and every `status` of every
+/// parked session pays that. The bound is kept.
+pub const UNCLASSIFIED_AFTER_QUERY: &str = "SELECT count(*) FROM harvest_events \
+     WHERE exec_id = ?1 AND seq > ?2 \
+     AND CASE \
+           WHEN NOT json_valid(event_json) THEN 1 \
+           WHEN json_type(event_json, '$.type') IS NOT 'text' THEN 1 \
+           WHEN (SELECT count(*) FROM json_each(event_json, '$') \
+                 WHERE key = 'type') <> 1 THEN 1 \
+           WHEN json_extract(event_json, '$.type') <> 'ActivityScheduled' THEN 0 \
+           WHEN json_type(event_json, '$.data.name') IS NOT 'text' THEN 1 \
+           WHEN (SELECT count(*) FROM json_each(event_json, '$') \
+                 WHERE key = 'data') <> 1 THEN 1 \
+           WHEN (SELECT count(*) FROM json_each(event_json, '$.data') \
+                 WHERE key = 'name') <> 1 THEN 1 \
+           ELSE 0 END";
 
 /// Count the events after `seq` that a query cannot classify or name.
 ///
@@ -438,14 +478,14 @@ pub fn newer_turn_evidence(
             |row| row.get::<_, i64>(0),
         )
         .map_err(|e| format!("cannot count the newer turns: {e}"))?;
-    let unreadable = conn
+    let unclassified = conn
         .query_row(
-            UNREADABLE_AFTER_QUERY,
+            UNCLASSIFIED_AFTER_QUERY,
             rusqlite::params![exec_id, seq],
             |row| row.get::<_, i64>(0),
         )
-        .map_err(|e| format!("cannot count the unreadable events: {e}"))?;
-    Ok((turns, unreadable))
+        .map_err(|e| format!("cannot count the unclassified events: {e}"))?;
+    Ok((turns, unclassified))
 }
 
 /// One recorded event, already cut to what an audit line prints.

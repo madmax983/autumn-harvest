@@ -3369,8 +3369,8 @@ fn every_paged_query_is_planned_as_a_seek() {
             "seq>?",
         ),
         (
-            "unreadable events",
-            crate::inspect::UNREADABLE_AFTER_QUERY,
+            "unclassified events",
+            crate::inspect::UNCLASSIFIED_AFTER_QUERY,
             vec![&"exec-1" as &dyn rusqlite::ToSql, &7_i64],
             "seq>?",
         ),
@@ -8386,6 +8386,68 @@ fn a_reply_the_page_cannot_see_does_not_let_an_older_call_answer() {
         (
             "a schedule with no readable kind either",
             r#"{"type":"ActivityScheduled","data":{"activity_id":"act_new","name":"#.to_string(),
+            hidden.clone(),
+        ),
+        // Below, the schedule stays valid JSON, and no query can settle what
+        // it is. A count of invalid JSON reports nothing for every one.
+        (
+            "a name that is not a string",
+            r#"{"type":"ActivityScheduled","data":{"activity_id":"act_new","name":5}}"#.to_string(),
+            hidden.clone(),
+        ),
+        (
+            "a schedule with no name",
+            r#"{"type":"ActivityScheduled","data":{"activity_id":"act_new"}}"#.to_string(),
+            hidden.clone(),
+        ),
+        (
+            "a null name",
+            r#"{"type":"ActivityScheduled","data":{"activity_id":"act_new","name":null}}"#
+                .to_string(),
+            hidden.clone(),
+        ),
+        (
+            "a kind that is not a string",
+            r#"{"type":5,"data":{"activity_id":"act_new","name":"claude_turn"}}"#.to_string(),
+            hidden.clone(),
+        ),
+        (
+            "a schedule with no kind",
+            r#"{"data":{"activity_id":"act_new","name":"claude_turn"}}"#.to_string(),
+            hidden.clone(),
+        ),
+        (
+            "data that is not an object",
+            r#"{"type":"ActivityScheduled","data":5}"#.to_string(),
+            hidden.clone(),
+        ),
+        (
+            "a row that is not an object",
+            r#"["ActivityScheduled"]"#.to_string(),
+            hidden.clone(),
+        ),
+        // Below, every query CAN read the row, and two readers disagree on
+        // what it says. The database answers with the first value of a
+        // repeated key, and the engine reader answers with the last.
+        (
+            "a repeated kind",
+            r#"{"type":"ActivityCompleted","type":"ActivityScheduled",
+                "data":{"activity_id":"act_new","name":"claude_turn"}}"#
+                .to_string(),
+            hidden.clone(),
+        ),
+        (
+            "a repeated name",
+            r#"{"type":"ActivityScheduled",
+                "data":{"activity_id":"act_new","name":"run_tool","name":"claude_turn"}}"#
+                .to_string(),
+            hidden.clone(),
+        ),
+        (
+            "repeated data",
+            r#"{"type":"ActivityScheduled","data":{"name":"run_tool"},
+                "data":{"activity_id":"act_new","name":"claude_turn"}}"#
+                .to_string(),
             hidden,
         ),
     ];
@@ -8393,6 +8455,117 @@ fn a_reply_the_page_cannot_see_does_not_let_an_older_call_answer() {
     for (case, schedule, newest) in cases {
         assert_no_older_call_answers(case, &older, schedule, newest);
     }
+}
+
+/// The evidence reads a newer turn whose ROW is in the wrong storage class.
+///
+/// A `TEXT` column keeps a stored `BLOB` as a `BLOB`, and an `INTEGER` column
+/// keeps text that holds no number. Both were assumed to fail closed here,
+/// and an assumption is not a guard. This measures them.
+///
+/// A `BLOB` payload reads as JSON, so the turn test names it. Text in `seq`
+/// sorts above every integer, so the bound admits the row. Neither shape can
+/// hide a newer turn.
+///
+/// The `exec_id` of the row is the one class this cannot reach. See
+/// [`inspect::UNCLASSIFIED_AFTER_QUERY`].
+#[test]
+fn the_evidence_reads_a_newer_turn_in_the_wrong_storage_class() {
+    let turn = r#"{"type":"ActivityScheduled","data":{"activity_id":"a","name":"claude_turn"}}"#;
+    let older = json!({"type":"ActivityCompleted","data":{"activity_id":"act_old","output":{
+        "stop_reason":"tool_use",
+        "tool_calls":[{"id":"toolu_same","name":"read_file",
+                       "input":{"path":"secrets.txt"}}]}}})
+    .to_string();
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let db = dir.path().join("classes.db");
+    let conn = rusqlite::Connection::open(&db).expect("the database opens");
+    conn.execute_batch(
+        "CREATE TABLE harvest_events (exec_id TEXT, seq INTEGER, event_json TEXT, \
+         PRIMARY KEY (exec_id, seq));",
+    )
+    .expect("the fixture schema is created");
+
+    for (case, sql, class) in [
+        (
+            "a payload stored as bytes",
+            "INSERT INTO harvest_events VALUES (?1, 1, cast(?2 as blob))",
+            "SELECT typeof(event_json) FROM harvest_events WHERE exec_id = ?1 AND seq = 1",
+        ),
+        (
+            "a sequence number stored as text",
+            "INSERT INTO harvest_events VALUES (?1, 'later', ?2)",
+            "SELECT typeof(seq) FROM harvest_events WHERE exec_id = ?1 AND seq = 'later'",
+        ),
+    ] {
+        conn.execute(
+            "INSERT INTO harvest_events VALUES (?1, 0, ?2)",
+            rusqlite::params![case, older],
+        )
+        .expect("the older reply is recorded");
+        conn.execute(sql, rusqlite::params![case, turn])
+            .expect("the newer turn is recorded");
+        let stored: String = conn
+            .query_row(class, rusqlite::params![case], |row| row.get(0))
+            .expect("the storage class reads");
+        assert_ne!(
+            stored, "",
+            "[{case}] the fixture must store the value it means to"
+        );
+
+        let evidence = inspect::newer_turn_evidence(&conn, case, 0).expect("the evidence reads");
+        assert_ne!(
+            evidence,
+            (0, 0),
+            "[{case}] a turn in class {stored} must still be counted"
+        );
+        let signal = session::approval_signal(2, 0, "toolu_same");
+        let refused = daemon::pending_call(&conn, case, &signal, false)
+            .expect_err("no call may be offered from an older reply");
+        assert!(
+            !refused.contains("secrets.txt"),
+            "[{case}] and the older call is never named: {refused}"
+        );
+    }
+}
+
+/// An ordinary row after the newest reply is still evidence of NOTHING.
+///
+/// The count above must answer for damage only. A refusal on a healthy
+/// history would park every session an operator cannot then release.
+///
+/// Each row here carries a kind the daemon reads, and none of them is a model
+/// turn. A tool schedule names another activity. A completion and a signal
+/// carry no name to read, and the count must not ask them for one.
+#[test]
+fn an_ordinary_row_after_the_newest_reply_counts_as_nothing() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let db = dir.path().join("healthy.db");
+    let conn = rusqlite::Connection::open(&db).expect("the database opens");
+    conn.execute_batch(
+        "CREATE TABLE harvest_events (exec_id TEXT, seq INTEGER, event_json TEXT, \
+         PRIMARY KEY (exec_id, seq));",
+    )
+    .expect("the fixture schema is created");
+    let rows = [
+        r#"{"type":"ActivityScheduled","data":{"activity_id":"t1","name":"run_tool"}}"#,
+        r#"{"type":"ActivityCompleted","data":{"activity_id":"t1","output":{"ok":true}}}"#,
+        r#"{"type":"SignalReceived","data":{"name":"tool_approval:2:0:toolu_same"}}"#,
+        r#"{"type":"ExecutionStarted"}"#,
+        r#"{"type":"TimerFired","data":null}"#,
+    ];
+    for (seq, row) in rows.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO harvest_events VALUES ('e', ?1, ?2)",
+            rusqlite::params![i64::try_from(seq).expect("the fixture is small"), row],
+        )
+        .expect("the row is recorded");
+    }
+    assert_eq!(
+        inspect::newer_turn_evidence(&conn, "e", -1).expect("the evidence reads"),
+        (0, 0),
+        "no ordinary row is evidence of a turn this daemon cannot name"
+    );
 }
 
 /// A REAL parked session still shows its call, with the evidence read live.
@@ -8418,6 +8591,22 @@ async fn a_live_parked_session_still_shows_its_awaited_call() {
 
     let reader = rusqlite::Connection::open(&db).expect("the database opens");
     let exec_id = exec.to_string();
+
+    // The turn test matches the engine's OWN schedule rows. Every fixture
+    // above writes the field names this query reads, so a fixture cannot
+    // prove the names are the ones the engine records. Read from the start of
+    // the history, every turn of this run is counted.
+    let (turns, unclassified) =
+        inspect::newer_turn_evidence(&reader, &exec_id, i64::MIN).expect("the evidence reads");
+    assert!(
+        turns > 0,
+        "the engine records a turn this query can name: {turns} turns, \
+         {unclassified} unclassified"
+    );
+    assert_eq!(
+        unclassified, 0,
+        "and no row of a healthy history is unclassified"
+    );
 
     // Tool events sit after the newest reply, and none of them is a turn.
     // This is what the guard must not mistake for a newer reply.

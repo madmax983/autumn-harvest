@@ -1393,9 +1393,10 @@ pub fn pending_call(
 
     // The reply above was found by a `stop_reason` in its OWN payload. A
     // newer reply with a damaged payload is therefore not in the page at all.
-    // Two rows that the damage cannot reach say when that happened: a turn
-    // scheduled after this reply, and a row of unknown kind after it. Either
-    // means the awaited call may sit in a reply this daemon cannot name.
+    // Two rows that the damage cannot reach say when that happened. One is a
+    // turn scheduled after this reply. The other is a row after it that this
+    // daemon cannot classify. Either means the awaited call may sit in a
+    // reply this daemon cannot name.
     if inspect::newer_turn_evidence(reader, exec_id, seq)? != (0, 0) {
         return Err(UNNAMEABLE_REPLY.to_string());
     }

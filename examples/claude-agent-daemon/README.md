@@ -83,12 +83,12 @@ cargo run -p claude-agent-daemon -- approve <id> <token>
 cargo run -p claude-agent-daemon -- status <id>     # COMPLETED
 cargo run -p claude-agent-daemon -- history <id>
 #    1  WorkflowStarted  {"input":{"goal":"summarise the README",…}}
-#    2  ActivityScheduled  {"activity_name":"claude_turn",…}   ← turn 1
+#    2  ActivityScheduled  {"name":"claude_turn",…}             ← turn 1
 #    3  ActivityCompleted  {"output":{"stop_reason":"tool_use",…}}
 #    …
 #    8  TimerStarted  {…}                    ← the approval deadline
 #    9  SignalReceived  {"name":"tool_approval:2:0:toolu_…",…}
-#   10  ActivityScheduled  {"activity_name":"run_tool",…}      ← the gated write
+#   10  ActivityScheduled  {"name":"run_tool",…}                ← the gated write
 #   …
 #   14  WorkflowCompleted  {"output":{"stop":"end_turn",…}}
 ```
