@@ -1597,6 +1597,144 @@ async fn detached_child_spawn_quota_check_excludes_its_own_just_appended_history
     );
 }
 
+fn detached_quota_multi_key_parent<'a>(
+    ctx: &'a WorkflowContext,
+    input: serde_json::Value,
+) -> Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'a>> {
+    Box::pin(async move {
+        let child_a = input["child_a"]
+            .as_str()
+            .expect("input.child_a")
+            .to_string();
+        let child_b = input["child_b"]
+            .as_str()
+            .expect("input.child_b")
+            .to_string();
+        let child_a: &'static str = Box::leak(child_a.into_boxed_str());
+        let child_b: &'static str = Box::leak(child_b.into_boxed_str());
+        // Four detached-spawn commands run in ONE decision cycle, across
+        // TWO workflow types and TWO tenant keys. `(child_a, "acme")` and
+        // `(child_b, "acme")` share a key STRING. They are still distinct
+        // `(workflow_name, quota_key)` pairs. `(child_a, "acme")` and
+        // `(child_a, "beta")` share a workflow type but differ by key.
+        // Both dimensions must dedup and sort correctly in the
+        // pre-acquisition `BTreeSet`. A lone spawn degenerates to a single
+        // pair and never exercises this.
+        for (child_type, tenant) in [
+            (child_a, "acme"),
+            (child_a, "beta"),
+            (child_b, "acme"),
+            (child_b, "beta"),
+        ] {
+            ctx.spawn_child_workflow_detached_raw(
+                child_type,
+                serde_json::json!({"tenant_id": tenant}),
+                ParentClosePolicy::Abandon,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(serde_json::json!("parent_done"))
+    })
+}
+
+/// Issue #1228, Finding 2 regression: a batch with MULTIPLE detached-spawn
+/// commands, across two workflow types and two tenant keys. It must lock
+/// every distinct `(workflow_name, quota_key)` pair in the new
+/// pre-acquisition pass. It must still admit every child.
+///
+/// The pre-existing detached-quota tests above each spawn exactly one
+/// child. Their pre-acquisition `BTreeSet` degenerates to a single pair.
+/// This test exercises its dedup and sort over several pairs instead.
+#[tokio::test]
+async fn detached_child_multi_spawn_batch_locks_every_distinct_key_and_admits_all() {
+    let (url, _c) = setup_test_database_url_or_env().await;
+    let mut conn = connect(&url).await;
+
+    let parent_wf_name = leaked("quota_detached_multikey_parent");
+    let child_alpha_name = leaked("quota_detached_multikey_child_a");
+    let child_beta_name = leaked("quota_detached_multikey_child_b");
+
+    // Generous caps -- this test is about lock coverage, not rejection.
+    let quota_policy = QuotaPolicy::new("tenant_id").with_max_active_executions(10);
+    let mut child_alpha_info = wf_info(child_alpha_name, detached_quota_child);
+    child_alpha_info.quota = Some(quota_policy);
+    let mut child_beta_info = wf_info(child_beta_name, detached_quota_child);
+    child_beta_info.quota = Some(quota_policy);
+
+    let parent = start_root(
+        &mut conn,
+        parent_wf_name,
+        &format!("parent-{}", Uuid::new_v4().simple()),
+        serde_json::json!({"child_a": child_alpha_name, "child_b": child_beta_name}),
+    )
+    .await;
+
+    let reg = registry(vec![
+        wf_info(parent_wf_name, detached_quota_multi_key_parent),
+        child_alpha_info,
+        child_beta_info,
+    ]);
+    let worker = build_runtime_worker("w-1228-detached-multikey", 2, 1, reg);
+    let handle = spawn_test_worker(Arc::clone(&worker), build_test_pool(&url));
+
+    // A longer bound than the usual 10s default. This decision cycle does
+    // FOUR lock acquisitions and four inserts, not one. It needs more
+    // margin under a busy CI runner. This mirrors
+    // `wait_for_execution_state_with_timeout`'s own documented reason for
+    // existing.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if load_execution(&mut conn, parent).await.state == "COMPLETED" {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "parent must reach COMPLETED within 30s"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    worker.shutdown();
+    handle.await.expect("worker join");
+
+    #[derive(diesel::QueryableByName, Debug, PartialEq, Eq)]
+    struct ChildRow {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        workflow_name: String,
+        #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+        quota_key: Option<String>,
+    }
+    let rows: Vec<ChildRow> = diesel::sql_query(
+        "SELECT workflow_name, quota_key FROM harvest_workflow_executions \
+         WHERE workflow_name = $1 OR workflow_name = $2",
+    )
+    .bind::<diesel::sql_types::Text, _>(child_alpha_name)
+    .bind::<diesel::sql_types::Text, _>(child_beta_name)
+    .load(&mut conn)
+    .await
+    .expect("load children");
+
+    assert_eq!(
+        rows.len(),
+        4,
+        "all four detached children, across two types and two keys, must be \
+         created -- got {rows:?}"
+    );
+    for (name, key) in [
+        (child_alpha_name, "acme"),
+        (child_alpha_name, "beta"),
+        (child_beta_name, "acme"),
+        (child_beta_name, "beta"),
+    ] {
+        assert!(
+            rows.contains(&ChildRow {
+                workflow_name: name.to_string(),
+                quota_key: Some(key.to_string()),
+            }),
+            "expected a child of type {name} keyed {key} -- got {rows:?}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Issue #946, Codex round-3 review — an AWAITED child spawn (`ctx.
 // spawn_child_workflow_raw`, whether a lone spawn or one of a genuine

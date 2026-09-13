@@ -308,11 +308,21 @@ to reclaim disk is not a decision the engine gets to make for you. Alert on
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `harvest.audit.export_lag` | Gauge (seconds) | `shard` | Age of the **oldest** audit record the sink has not acknowledged. `0` means fully caught up. |
+| `harvest.audit.export_observed` | Gauge (0/1) | `shard` | `1` when the exporter could read this shard's cursor and lag this tick, `0` when it could not (issue #1268). See below. |
 | `harvest.audit.exported` | Counter | `shard` | Records acknowledged, counted only after the cursor advanced. |
 
-Both are labelled `{shard}` only. The audit `actor`, `operation`, and
+All three are labelled `{shard}` only. The audit `actor`, `operation`, and
 `target_id` are deliberately never labels — they are unbounded, user-supplied,
 and tenant-identifying (ADR-0001 §7).
+
+> **Why a separate availability gauge.** `harvest.audit.export_lag` is
+> written only on a successful observation. A shard the exporter cannot
+> reach — a connection it cannot acquire, a failing cursor read, a failing
+> lag query — leaves the lag gauge exactly where it last was, commonly `0`.
+> Prometheus then reports neither a high value nor an absent series while
+> that shard goes unexported. `harvest.audit.export_observed` is emitted on
+> every tick that reaches a shard, success or failure, so it stays alertable
+> exactly when the lag gauge cannot.
 
 > **Why oldest, not newest.** Under sustained mutating load a stuck exporter
 > always has a brand-new unexported record, so a lag defined against the
@@ -327,6 +337,11 @@ A suggested alert: `harvest_audit_export_lag > 300` for 10 minutes. Sustained
 lag means privileged-action logs are not reaching the SIEM. Nothing is lost —
 the cursor is held rather than advanced — but the window during which a
 compromise would be invisible is growing.
+
+A second suggested alert: `harvest_audit_export_observed == 0` for 10 minutes.
+This catches the case the lag threshold cannot: an exporter that is alive but
+cannot see a shard at all. See
+`docs/runbooks/harvest-alerts.md#harvest_audit_export_unobservable`.
 
 ### `GET /admin/audit-export`
 
