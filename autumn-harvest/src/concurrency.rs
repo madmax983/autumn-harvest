@@ -196,6 +196,25 @@ pub struct SupersedePlan {
     pub shed: usize,
 }
 
+/// How many `credited_ids` are absent from `shed_ids` (issue #1228 review, P2).
+///
+/// A quota admission credits an execution's slot on the assumption that a
+/// later, real supersede pass will cancel it. `shed_ids` is the population
+/// that pass actually cancelled. The count returned here is how many
+/// credited runs it left running instead. A credited run can go unshed on
+/// a candidate's own corrupted `parent_close_policy`, or on an unexpected
+/// `Config` error from its terminal chokepoint. See
+/// [`crate::execution::run_latest_wins_supersede`]'s own doc comment. A
+/// non-zero result means the admission that spent this credit is now
+/// genuinely over its declared quota cap.
+#[must_use]
+pub fn credited_but_not_shed_count(credited_ids: &[uuid::Uuid], shed_ids: &[uuid::Uuid]) -> usize {
+    credited_ids
+        .iter()
+        .filter(|id| !shed_ids.contains(id))
+        .count()
+}
+
 /// Resolve a dot-notation key expression against a JSON input payload.
 ///
 /// The `"input."` prefix is stripped if present so both `"tenant_id"` and
@@ -458,6 +477,180 @@ tokio::task_local! {
     static ADMITTING: Vec<crate::types::ExecutionId>;
 }
 
+/// Slots [`dry_run_supersede_credit`] finds a pending `cancel_running` pass
+/// will free, scoped to ONE `quota_key`.
+///
+/// Issue #1228 review: this used to also carry `active_executions` and
+/// `history_bytes` aggregates, subtracted from a separately-read
+/// [`crate::quota::QuotaUsage`] by the caller. Two separate reads meant two
+/// separate snapshots. A row could change between them -- an incumbent
+/// completing on its own, or the checked admission's own row picking up a
+/// `WorkflowStarted` event. Either change made the subtraction stale.
+/// [`crate::quota::load_quota_usage_excluding`] now excludes `credited_ids`
+/// directly inside the SAME query that reads usage, so there is no earlier
+/// read left to go stale relative to. `credited_ids` alone is what a caller
+/// needs to build that exclusion list.
+#[cfg(feature = "db")]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SupersedeCredit {
+    /// The exact executions this credit counted on.
+    ///
+    /// The real supersede pass can leave one of these running instead of
+    /// cancelling it. A skipped cancellation on a `Config` or
+    /// `InvalidParentClosePolicy` error inside `supersede_inner` is one
+    /// cause. A candidate that changed state on its own is another. That
+    /// can happen between this dry run's deliberately unlocked scan and
+    /// the real pass's own, later, independent re-scan. See
+    /// [`dry_run_supersede_credit`]'s own doc comment for why that scan
+    /// takes no lock. Every caller reconciles this list against the real
+    /// pass's [`SupersedeOutcome::superseded`] and reports the gap. See
+    /// [`crate::execution::run_latest_wins_supersede`].
+    pub credited_ids: Vec<uuid::Uuid>,
+}
+
+/// Dry-run count of the shed slots a `cancel_running` pass would free.
+///
+/// Counts how many runs [`supersede_running_for_key`] would shed for
+/// `(workflow_name, concurrency_key)` right now, scoped to the runs that
+/// ALSO carry `quota_key` (issue #1228, Finding 1). Cancels nothing.
+///
+/// A quota check needs to see the slot(s) a later `cancel_running` pass will
+/// free, without moving the actual cancellation earlier. The real pass must
+/// stay AFTER the admitted row's own `WorkflowStarted` event and task are
+/// durable — see [`supersede_running_for_key`]'s own doc comment for why.
+///
+/// # Scoping (Codex review, PR #1484)
+///
+/// `concurrency_key` and `quota_key` are resolved by two independent
+/// expressions. They can differ. A shed candidate without a matching
+/// `quota_key` belongs to a different tenant's quota bucket. Crediting it
+/// here would free capacity for the WRONG tenant. This function counts only
+/// candidates whose persisted `quota_key` column matches. It counts only
+/// among the OLDEST `shed` candidates the real pass would actually cancel —
+/// the same `candidates.into_iter().take(shed)` selection `supersede_inner`
+/// uses.
+///
+/// # No advisory lock, no row lock (issue #1228 review)
+///
+/// This takes neither `lock_concurrency_key` nor a row lock on the
+/// candidates it scans. Earlier review passes each tried locking this
+/// scan, to keep its population stable until the real pass re-scans it.
+/// Each attempt opened a new hazard:
+///
+/// * A plain `FOR UPDATE` on every scanned row can deadlock against a
+///   concurrently completing incumbent's own row lock. That happens if the
+///   incumbent's terminal chokepoint starts a nested admission on the SAME
+///   quota key -- an ABBA cycle against `lock_quota_key`.
+/// * `FOR UPDATE ... SKIP LOCKED` closes that cycle. It skips an
+///   already-locked row instead of waiting on it. But
+///   [`crate::store::next_event_id_for`] takes a plain `FOR UPDATE` on a
+///   workflow's row during EVERY ordinary decision cycle. It does that
+///   without transitioning the row out of `RUNNING`. `SKIP LOCKED` cannot
+///   tell that apart from a row genuinely leaving the population. A
+///   `cancel_running` admission that scans an incumbent at the exact
+///   moment some unrelated decision cycle holds its lock would undercount
+///   the credit. `enforce_quota_admission` could then reject an
+///   otherwise-healthy admission with `QuotaExceeded` -- defeating
+///   `cancel_running` far more often than the deadlock this was meant to
+///   prevent.
+/// * Adding `lock_concurrency_key` around the row lock closed a THIRD
+///   cycle the row lock itself created, against
+///   [`crate::execution::cancel_workflow_execution_collect`]'s own row
+///   lock. It did nothing for the `SKIP LOCKED` problem above, since that
+///   lock only changes what the scan waits FOR, not what it SKIPS.
+///
+/// A later pass built a second, independent safety net for exactly this
+/// kind of staleness: [`SupersedeCredit::credited_ids`]. It is reconciled
+/// by [`crate::execution::run_latest_wins_supersede`] against the real
+/// pass's actual outcome. That mechanism does not care WHY a credited
+/// candidate went unshed. A skipped cancellation and a stale scan both
+/// surface identically as a gap between `credited_ids` and
+/// `outcome.superseded`. Both get reported via
+/// `harvest.quota.supersede_credit_not_shed`. With that net in place, no
+/// lock here is needed at all. An unlocked read can only ever make the
+/// scanned population MORE stale, never less honest about what it saw.
+/// The reconciliation catches every resulting gap after the fact. Each
+/// lock design tried here instead carried its own deadlock or
+/// availability cost.
+///
+/// # Errors
+///
+/// Propagates database failures from the candidate scan.
+#[cfg(feature = "db")]
+pub async fn dry_run_supersede_credit(
+    conn: &mut diesel_async::AsyncPgConnection,
+    workflow_name: &str,
+    concurrency_key: &str,
+    limit: u32,
+    self_exec_id: crate::types::ExecutionId,
+    quota_key: &str,
+) -> crate::error::HarvestResult<SupersedeCredit> {
+    use diesel_async::RunQueryDsl;
+
+    #[derive(diesel::QueryableByName)]
+    struct Row {
+        #[diesel(sql_type = diesel::sql_types::Uuid)]
+        id: uuid::Uuid,
+        #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+        quota_key: Option<String>,
+    }
+
+    let inherited: Vec<crate::types::ExecutionId> =
+        ADMITTING.try_with(Clone::clone).unwrap_or_default();
+    let fetch_cap =
+        i64::from(limit).saturating_add(i64::try_from(SUPERSEDE_SCAN_LIMIT).unwrap_or(i64::MAX));
+    let excluded: Vec<uuid::Uuid> = vec![self_exec_id.as_uuid()];
+
+    // Mirrors `active_runs_for_key`'s own query (same candidate population,
+    // same oldest-first order), plus the `quota_key` column that function
+    // has no need for.
+    //
+    // Deliberately unlocked (issue #1228 review). See this function's own
+    // doc comment for the three lock designs tried and discarded here, and
+    // why `credited_ids` reconciliation replaces all of them.
+    let rows: Vec<Row> = diesel::sql_query(
+        "SELECT e.id, e.quota_key \
+         FROM harvest_workflow_executions e \
+         WHERE e.workflow_name = $1 \
+           AND e.state IN ('RUNNING', 'PAUSED') \
+           AND e.id <> ALL($2) \
+           AND EXISTS ( \
+               SELECT 1 FROM harvest_task_queue t \
+               WHERE t.workflow_exec_id = e.id \
+                 AND t.task_type = 'workflow' \
+                 AND t.concurrency_key = $3 \
+           ) \
+         ORDER BY e.started_at ASC, e.id ASC \
+         LIMIT $4",
+    )
+    .bind::<diesel::sql_types::Text, _>(workflow_name)
+    .bind::<diesel::sql_types::Array<diesel::sql_types::Uuid>, _>(excluded)
+    .bind::<diesel::sql_types::Text, _>(concurrency_key)
+    .bind::<diesel::sql_types::BigInt, _>(fetch_cap)
+    .load(conn)
+    .await
+    .map_err(crate::error::database_error)?;
+
+    let (candidates, protected): (Vec<Row>, Vec<Row>) = rows
+        .into_iter()
+        .partition(|r| !inherited.contains(&crate::types::ExecutionId::from_uuid(r.id)));
+    let shed = supersede_plan(candidates.len(), protected.len(), limit).shed;
+
+    // The actual shed set: the OLDEST `shed` candidates, exactly what
+    // `supersede_inner`'s own `candidates.into_iter().take(shed)` cancels.
+    // Only the ones sharing `quota_key` credit THIS admission's usage.
+    let shed_matching_ids: Vec<uuid::Uuid> = candidates
+        .into_iter()
+        .take(shed)
+        .filter(|r| r.quota_key.as_deref() == Some(quota_key))
+        .map(|r| r.id)
+        .collect();
+
+    Ok(SupersedeCredit {
+        credited_ids: shed_matching_ids,
+    })
+}
+
 /// Latest-wins: cancel the OLDEST in-flight runs for `(workflow_name, key)` until
 /// the post-admission population respects `limit` (issue #811).
 ///
@@ -477,11 +670,26 @@ tokio::task_local! {
 /// its `ParentClosePolicy` cascade runs normally. No new `WorkflowEvent` variant
 /// and no migration (AC5).
 ///
+/// `quota_lock_held` (issue #1228 review, P1 on the prior round's own
+/// fix). `true` only when THIS transaction's `enforce_quota_admission`
+/// call actually acquired `lock_quota_key`, for the admission being
+/// checked. That happens exactly when its `quota_policy` had a cap and
+/// its `quota_key` resolved. Only then can waiting on a candidate's row
+/// lock complete the ABBA cycle the shed loop's non-blocking probe
+/// avoids (see that comment). A `cancel_running` workflow with no quota
+/// policy never takes that lock, so the cycle cannot form there. This
+/// function then falls back to the plain, blocking cancel every caller
+/// used before that fix. A probe would skip candidates locked by an
+/// ordinary, unrelated decision cycle there, for no safety benefit.
+///
 /// # Errors
 ///
 /// Propagates database failures from the advisory lock, the candidate scan, or a
 /// cancellation. A candidate that reached a terminal state between the scan and
-/// the cancel is skipped, not an error.
+/// the cancel is skipped, not an error. So is a candidate whose row lock this
+/// function's own non-blocking probe could not claim, when `quota_lock_held`
+/// applies that probe (issue #1228 review, P1). See the shed loop's own
+/// comment for why waiting there is unsafe only in that case.
 #[cfg(feature = "db")]
 pub async fn supersede_running_for_key(
     conn: &mut diesel_async::AsyncPgConnection,
@@ -490,6 +698,7 @@ pub async fn supersede_running_for_key(
     limit: u32,
     self_exec_id: crate::types::ExecutionId,
     metrics: Option<&(dyn crate::telemetry::MetricsRecorder + Send + Sync)>,
+    quota_lock_held: bool,
 ) -> crate::error::HarvestResult<SupersedeOutcome> {
     let inherited: Vec<crate::types::ExecutionId> =
         ADMITTING.try_with(Clone::clone).unwrap_or_default();
@@ -507,12 +716,89 @@ pub async fn supersede_running_for_key(
                 self_exec_id,
                 inherited,
                 metrics,
+                quota_lock_held,
             ),
         )
         .await
 }
 
+/// Non-blockingly claims one candidate's row lock, returning its id when
+/// claimed or `None` when it is locked elsewhere right now (issue #1228
+/// review, P1).
+///
+/// `supersede_inner`'s transaction already holds `lock_quota_key` for the
+/// admission being checked. An incumbent can be completing on its own at
+/// the same time, holding this candidate's row lock. Its own inline,
+/// same-shard completion-trigger admission (issue #618) then waits on that
+/// SAME quota lock, if the triggered start shares the checked admission's
+/// `(workflow_name, quota_key)`. Waiting on the row lock here would
+/// complete that ABBA cycle. Postgres could only break it by aborting one
+/// side with `40P01`.
+///
+/// `SKIP LOCKED` avoids ever waiting. A candidate locked elsewhere is
+/// simply not shed this round. `supersede_inner`'s own caller already
+/// tolerates that same outcome for a corrupt neighbour or a benign
+/// terminal race. `credited_ids` reconciliation in
+/// `crate::execution::run_latest_wins_supersede` catches this the same way
+/// it catches every other reason a candidate goes unshed.
+///
+/// A successful claim is re-entrant: the immediately following
+/// `cancel_workflow_execution_collect` call takes the SAME row lock again,
+/// inside the SAME transaction, which Postgres grants at once.
+///
+/// # Errors
+///
+/// Propagates database failures from the claim query.
 #[cfg(feature = "db")]
+async fn try_claim_candidate_row(
+    conn: &mut diesel_async::AsyncPgConnection,
+    exec_id: crate::types::ExecutionId,
+) -> crate::error::HarvestResult<Option<uuid::Uuid>> {
+    use diesel::OptionalExtension;
+    use diesel_async::RunQueryDsl;
+
+    #[derive(diesel::QueryableByName)]
+    struct ClaimedId {
+        #[diesel(sql_type = diesel::sql_types::Uuid)]
+        id: uuid::Uuid,
+    }
+
+    let claimed: Option<ClaimedId> = diesel::sql_query(
+        "SELECT id FROM harvest_workflow_executions WHERE id = $1 FOR UPDATE SKIP LOCKED",
+    )
+    .bind::<diesel::sql_types::Uuid, _>(exec_id.as_uuid())
+    .get_result(conn)
+    .await
+    .optional()
+    .map_err(crate::error::database_error)?;
+    Ok(claimed.map(|row| row.id))
+}
+
+/// [`try_claim_candidate_row`], plus a warning log on a miss. `true` when
+/// claimed. `supersede_inner`'s shed loop skips the candidate on `false`.
+#[cfg(feature = "db")]
+async fn claim_candidate_row_or_warn(
+    conn: &mut diesel_async::AsyncPgConnection,
+    exec_id: crate::types::ExecutionId,
+    workflow_name: &str,
+    concurrency_key: &str,
+) -> crate::error::HarvestResult<bool> {
+    if try_claim_candidate_row(conn, exec_id).await?.is_some() {
+        return Ok(true);
+    }
+    tracing::warn!(
+        candidate = %exec_id,
+        workflow = %workflow_name,
+        concurrency_key = %concurrency_key,
+        "harvest: latest-wins supersede skipped a candidate whose row was \
+         locked elsewhere; the key may remain over its declared limit until \
+         the next admission",
+    );
+    Ok(false)
+}
+
+#[cfg(feature = "db")]
+#[allow(clippy::too_many_arguments)]
 async fn supersede_inner(
     conn: &mut diesel_async::AsyncPgConnection,
     workflow_name: &str,
@@ -521,6 +807,7 @@ async fn supersede_inner(
     self_exec_id: crate::types::ExecutionId,
     inherited: Vec<crate::types::ExecutionId>,
     metrics: Option<&(dyn crate::telemetry::MetricsRecorder + Send + Sync)>,
+    quota_lock_held: bool,
 ) -> crate::error::HarvestResult<SupersedeOutcome> {
     lock_concurrency_key(conn, concurrency_key).await?;
 
@@ -602,6 +889,19 @@ async fn supersede_inner(
 
     let mut outcome = SupersedeOutcome::default();
     for candidate in candidates.into_iter().take(shed) {
+        // Non-blocking probe for the row lock `cancel_workflow_execution_collect`
+        // is about to take. Applied ONLY when this transaction holds the
+        // quota lock the ABBA cycle needs (issue #1228 review, P1 on the
+        // probe's own prior-round fix). See `try_claim_candidate_row`'s
+        // and this function's own `quota_lock_held` doc. Skipping there
+        // is unsafe, not just unnecessary, outside that case.
+        if quota_lock_held
+            && !claim_candidate_row_or_warn(conn, candidate.exec_id, workflow_name, concurrency_key)
+                .await?
+        {
+            continue;
+        }
+
         let (cancelled, mut deferred, mut checks, _terminal_metric) =
             match crate::execution::cancel_workflow_execution_collect(
                 conn,
@@ -897,5 +1197,26 @@ mod tests {
     #[test]
     fn supersede_count_saturates_on_absurd_limit() {
         assert_eq!(supersede_count(3, u32::MAX), 0);
+    }
+
+    #[test]
+    fn credited_but_not_shed_count_reports_every_credited_id_that_was_not_shed() {
+        let a = uuid::Uuid::from_u128(1);
+        let b = uuid::Uuid::from_u128(2);
+        let c = uuid::Uuid::from_u128(3);
+
+        // The real pass shed everything it was credited for -- no gap.
+        assert_eq!(credited_but_not_shed_count(&[a, b], &[a, b]), 0);
+        // The real pass shed a superset -- still no gap.
+        assert_eq!(credited_but_not_shed_count(&[a], &[a, b]), 0);
+        // The real pass shed nothing at all.
+        assert_eq!(credited_but_not_shed_count(&[a, b], &[]), 2);
+        // The real pass shed one of the two credited ids -- `b`'s own
+        // cancellation was skipped (issue #1228 review, P2).
+        assert_eq!(credited_but_not_shed_count(&[a, b], &[a]), 1);
+        // A shed id the credit never counted on is irrelevant to the gap.
+        assert_eq!(credited_but_not_shed_count(&[a], &[c]), 1);
+        // No credit, no gap, regardless of what the real pass shed.
+        assert_eq!(credited_but_not_shed_count(&[], &[a, b]), 0);
     }
 }

@@ -5877,6 +5877,142 @@ async fn a_redriven_history_re_dispatches_the_work_its_failing_cycle_abandoned()
     );
 }
 
+/// Issue #1262: the same shape as
+/// `a_redriven_history_re_dispatches_the_work_its_failing_cycle_abandoned`,
+/// with one addition. The failing cycle also recorded a plain marker
+/// after the abandoned dispatch, before it failed. That marker must not
+/// block the redrive from re-dispatching the child live.
+#[tokio::test]
+async fn a_redriven_history_re_dispatches_past_a_trailing_marker() {
+    let child_id = ExecutionId::new();
+    let events = vec![
+        WorkflowEvent::WorkflowStarted {
+            input: serde_json::json!({ "children": 1 }),
+            timestamp: Utc::now(),
+            last_completion_result: None,
+            last_error: None,
+            scheduled_time: None,
+        },
+        WorkflowEvent::ChildWorkflowStarted {
+            child_id,
+            workflow_name: "worker_child".to_string(),
+            input: serde_json::json!({ "slot": 0 }),
+        },
+        WorkflowEvent::ChildWorkflowFailed {
+            child_id,
+            error: autumn_harvest::event::ABANDONED_DISPATCH_REASON.to_string(),
+            error_type: None,
+            details: None,
+            non_retryable: Some(true),
+        },
+        WorkflowEvent::MarkerRecorded {
+            name: "m".to_string(),
+            details: Value::Null,
+        },
+        WorkflowEvent::workflow_failed("budget exceeded"),
+        WorkflowEvent::WorkflowRedriven {
+            redriven_at: Utc::now(),
+            dead_letter_id: uuid::Uuid::new_v4(),
+            reason: Some("config fixed".to_string()),
+        },
+    ];
+    let report = WorkflowReplayer::new()
+        .register_fn("observe_abandoned_children", observe_abandoned_children)
+        .replay_from_snapshot(make_snapshot(
+            "observe_abandoned_children",
+            ExecutionId::new(),
+            events,
+        ))
+        .await;
+    let observed = report
+        .failure_message()
+        .map(ToOwned::to_owned)
+        .unwrap_or_default();
+    assert!(
+        !observed.contains(autumn_harvest::event::ABANDONED_DISPATCH_REASON)
+            && !observed.contains("MarkerRecorded"),
+        "a trailing marker must not stop the reopened run from reaching the \
+         live dispatch path: {report}"
+    );
+}
+
+/// A workflow that re-dispatches a child, then calls a version gate for the
+/// same change id the swallowed marker below already names.
+fn redispatch_then_version<'a>(
+    ctx: &'a WorkflowContext,
+    _input: Value,
+) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send + 'a>> {
+    Box::pin(async move {
+        let outcome = ctx
+            .spawn_child_workflow_raw("worker_child", serde_json::json!({ "slot": 0 }))
+            .await;
+        let dispatch = match outcome {
+            Ok(value) => format!("ok({value})"),
+            Err(error) => format!("err({error})"),
+        };
+        let version = ctx.version("gate", 1, 2);
+        Err(format!("dispatch={dispatch} version={version}"))
+    })
+}
+
+/// Issue #1262, end to end. The swallowed marker is a `version:gate`
+/// marker recording `1`, from the same failing cycle a redrive reopens.
+/// The reopened run must not read that stale value back. It must
+/// re-derive the version live and land on `max` (`2`). This matches the
+/// issue's own description: the reopened run replays from the last
+/// durable boundary and re-emits its own markers.
+#[tokio::test]
+async fn a_redriven_run_re_derives_a_version_gate_past_the_swallowed_marker() {
+    let child_id = ExecutionId::new();
+    let events = vec![
+        WorkflowEvent::WorkflowStarted {
+            input: Value::Null,
+            timestamp: Utc::now(),
+            last_completion_result: None,
+            last_error: None,
+            scheduled_time: None,
+        },
+        WorkflowEvent::ChildWorkflowStarted {
+            child_id,
+            workflow_name: "worker_child".to_string(),
+            input: serde_json::json!({ "slot": 0 }),
+        },
+        WorkflowEvent::ChildWorkflowFailed {
+            child_id,
+            error: autumn_harvest::event::ABANDONED_DISPATCH_REASON.to_string(),
+            error_type: None,
+            details: None,
+            non_retryable: Some(true),
+        },
+        WorkflowEvent::MarkerRecorded {
+            name: "version:gate".to_string(),
+            details: serde_json::json!(1),
+        },
+        WorkflowEvent::workflow_failed("budget exceeded"),
+        WorkflowEvent::WorkflowRedriven {
+            redriven_at: Utc::now(),
+            dead_letter_id: uuid::Uuid::new_v4(),
+            reason: Some("config fixed".to_string()),
+        },
+    ];
+    let report = WorkflowReplayer::new()
+        .register_fn("redispatch_then_version", redispatch_then_version)
+        .replay_from_snapshot(make_snapshot(
+            "redispatch_then_version",
+            ExecutionId::new(),
+            events,
+        ))
+        .await;
+    let observed = report
+        .failure_message()
+        .map(ToOwned::to_owned)
+        .unwrap_or_default();
+    assert!(
+        observed.contains("version=2"),
+        "the swallowed marker must not leak into a live version() call: {report}"
+    );
+}
+
 /// Negative control: drift *before* the failure point is still reported. The
 /// failing tail excuses only what happens past the last recorded event.
 #[tokio::test]
