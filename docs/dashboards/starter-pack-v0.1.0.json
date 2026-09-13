@@ -3893,6 +3893,55 @@
             }
           ],
           "description": "A nested self-referential completion-trigger admission (cancelling an incumbent synchronously starts a new run under the same on_conflict = cancel_running key) left the key transiently over its declared limit \u2014 the outer admission is protected from being shed, so the nested pass has nothing left it may cancel. Self-healing on the next ordinary admission for the key (issue #1197)."
+        },
+        {
+          "id": 956,
+          "type": "timeseries",
+          "title": "Quota supersede credit not shed",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 78
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "custom": {
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "lineWidth": 1
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (workflow) (rate(harvest_quota_supersede_credit_not_shed_total{workflow=~\"$workflow\"}[$__rate_interval]))",
+              "legendFormat": "{{workflow}}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              }
+            }
+          ],
+          "description": "A cancel_running admission's quota check credited a candidate's usage against the incumbent it planned to shed, but the real supersede pass left that candidate running \u2014 a corrupt neighbour, a benign terminal race, or (issue #1228 review) a row locked elsewhere that the non-blocking supersede probe skipped rather than waited on. The key may stay over its declared cap until the next admission for it; alert on sustained non-zero rates."
         }
       ]
     },

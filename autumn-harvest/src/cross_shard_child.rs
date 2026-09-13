@@ -1570,6 +1570,8 @@ async fn start_child_on_target(
                     spec.quota_key.as_deref(),
                     &workflow_name,
                     Some(metrics),
+                    None, // no dry-run credit on a cross-shard child spawn (children never declare cancel_running)
+                    child_exec_id,
                 )
                 .await?;
                 store::append_events_offloaded_with_codecs(

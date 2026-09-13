@@ -974,7 +974,9 @@ ways to satisfy it:
 ```rust
 // (a) record into harvest — the default mode:
 let runtime = ConnectorRuntime::new(/* ... */)
-    .with_dead_letter_sink(Arc::new(RecordingDeadLetterSink::new()));
+    .with_dead_letter_sink(Arc::new(
+        autumn_harvest_plugin::connector::PostgresDeadLetterSink::new(pool.clone()),
+    ));
 
 // (b) or let the broker's own redrive policy own dead-lettering, in which
 //     case no harvest sink is consulted at all:
