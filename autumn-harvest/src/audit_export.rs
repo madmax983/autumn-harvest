@@ -875,7 +875,8 @@ pub struct ClaimedBatch {
     pub lease_until: DateTime<Utc>,
 }
 
-/// Create this shard's cursor row if it does not exist, and stamp it as alive.
+/// Create this shard's cursor row if it does not exist, and heartbeat it if it
+/// does. **Never reactivates a retired cursor** — see issue #1273.
 ///
 /// Deliberately not seeded by the migration: a shard's database cannot know
 /// its own shard id (see the migration's comment, and
@@ -902,11 +903,9 @@ pub async fn ensure_cursor_row(
     // `(shard, seq)` pair that names a *different* record is the one way to
     // make a receiver deduping on that pair discard genuine audit events.
     //
-    // 1. The row is retired rather than deleted (`decommission_cursor`), so
+    // 1. The row is retired rather than deleted ([`decommission_cursor`]), so
     //    `last_assigned_seq` survives even when retention later purges every
-    //    stamped row (issue #953, Codex review round 7 P1). The ON CONFLICT
-    //    arm therefore only clears `retired_at` -- re-enabling export resumes
-    //    the preserved counter, and never resets it.
+    //    stamped row (issue #953).
     // 2. The INSERT arm still seeds from `MAX(export_seq)` rather than 0, for
     //    the paths where the row genuinely went missing anyway: a manual
     //    DELETE, a partial restore (round 4 P1). Restarting at 0 there would
@@ -917,10 +916,28 @@ pub async fn ensure_cursor_row(
     // stamped rows re-delivers them rather than assuming they shipped:
     // at-least-once, deduped by the receiver on a now-stable pair, erring
     // toward re-export over silent loss.
+    //
+    // The ON CONFLICT arm is guarded by `WHERE retired_at IS NULL` (issue
+    // #1273). This call used to clear `retired_at` unconditionally.
+    //
+    // That was a race. A scanner tick reads its config, then calls this
+    // function, with no lock held in between. A tick already under way when
+    // an operator runs [`decommission_cursor`] can still reach this call
+    // afterwards, and used to silently un-retire the shard.
+    //
+    // Postgres checks an `ON CONFLICT DO UPDATE ... WHERE` predicate under
+    // the same lock that resolves the conflict. So this is race-free by
+    // construction: whichever of this call and a decommission commits first
+    // wins, and a retired row is now a no-op here. It gets no heartbeat and
+    // no un-retire.
+    //
+    // Resuming a retired shard is [`reactivate_cursor`]: an explicit, audited
+    // operator action, not a side effect of the exporter noticing new work.
     diesel::sql_query(
         "INSERT INTO harvest_audit_export_cursor (shard_id, last_assigned_seq) \
          SELECT $1, COALESCE(MAX(export_seq), 0) FROM harvest_audit_log \
-         ON CONFLICT (shard_id) DO UPDATE SET updated_at = NOW(), retired_at = NULL",
+         ON CONFLICT (shard_id) DO UPDATE SET updated_at = NOW() \
+         WHERE harvest_audit_export_cursor.retired_at IS NULL",
     )
     .bind::<diesel::sql_types::Integer, _>(shard_id)
     .execute(conn)
@@ -929,7 +946,55 @@ pub async fn ensure_cursor_row(
     Ok(())
 }
 
-/// Remove a shard's export cursor, re-enabling audit retention there.
+/// Result of resolving a decommission or reactivate request against the live
+/// cursor. The two share a shape because they are inverse transitions of the
+/// same state machine — see issue #1273.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecommissionOutcome {
+    /// The cursor moved from active to retired.
+    Retired,
+    /// The cursor was already retired. Idempotent: no write happened.
+    AlreadyRetired,
+    /// No cursor exists for this shard. There is nothing to retire.
+    NotConfigured,
+}
+
+/// The reactivate-side counterpart of [`DecommissionOutcome`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReactivateOutcome {
+    /// The cursor moved from retired back to active.
+    Reactivated,
+    /// The cursor was already active. Idempotent: no write happened.
+    AlreadyActive,
+    /// No cursor exists for this shard. There is nothing to reactivate.
+    NotConfigured,
+}
+
+/// Retire a shard's export cursor, re-enabling audit retention there.
+///
+/// Opens its own transaction. The management route pairs the retirement with
+/// its own audit record, so it uses [`decommission_cursor_locked`] instead —
+/// see that function.
+///
+/// # Errors
+/// Returns `HarvestError` on a database failure.
+#[cfg(feature = "db")]
+pub async fn decommission_cursor(
+    conn: &mut diesel_async::AsyncPgConnection,
+    shard_id: i32,
+    now: DateTime<Utc>,
+) -> crate::error::HarvestResult<DecommissionOutcome> {
+    use diesel_async::AsyncConnection;
+
+    Box::pin(
+        conn.transaction::<DecommissionOutcome, crate::error::HarvestError, _>(async |conn| {
+            decommission_cursor_locked(conn, shard_id, now).await
+        }),
+    )
+    .await
+}
+
+/// [`decommission_cursor`] without the surrounding transaction.
 ///
 /// The **explicit decommission step** for audit export (issue #953, Codex
 /// review round 3 P1). While a cursor row exists,
@@ -939,10 +1004,10 @@ pub async fn ensure_cursor_row(
 ///
 /// This deliberately replaced a 24-hour heartbeat TTL. A TTL cannot tell
 /// "export was intentionally removed" from "the worker has been down since
-/// Friday", and it resolves that ambiguity by *deleting audit records* — the
-/// one outcome this feature exists to prevent, arriving precisely during an
-/// outage. Unbounded table growth is the strictly better failure: it is loud
-/// (`harvest.audit.export_lag`, the `last_error` on
+/// Friday". It used to resolve that ambiguity by *deleting audit records* —
+/// the one outcome this feature exists to prevent, arriving precisely during
+/// an outage. Unbounded table growth is the strictly better failure: it is
+/// loud (`harvest.audit.export_lag`, the `last_error` on
 /// `GET /admin/audit-export`), it is bounded by the genuine unexported
 /// backlog rather than by the whole table (fully-acknowledged records are
 /// purged normally), and it is *reversible* — deleted audit records are not.
@@ -959,19 +1024,42 @@ pub async fn ensure_cursor_row(
 /// different records. Keeping the row makes the high-water mark durable
 /// independently of retention.
 ///
-/// Safe to reverse: the next [`ensure_cursor_row`] un-retires the row and
-/// resumes from the preserved `last_assigned_seq`, so re-enabling export
-/// continues the sequence. Records purged while retired are gone and are not
-/// re-delivered — `last_acked_seq` is preserved too.
+/// Reversible via [`reactivate_cursor`], an explicit, audited operator action
+/// that resumes from the preserved `last_assigned_seq`. Records purged while
+/// retired are gone and are not re-delivered — `last_acked_seq` is preserved
+/// too.
+///
+/// **Must be called inside a transaction.** On an autocommit connection the
+/// row lock below is released before the caller can pair it with anything.
 ///
 /// # Errors
 /// Returns `HarvestError` on a database failure.
 #[cfg(feature = "db")]
-pub async fn decommission_cursor(
+pub async fn decommission_cursor_locked(
     conn: &mut diesel_async::AsyncPgConnection,
     shard_id: i32,
-) -> crate::error::HarvestResult<bool> {
+    now: DateTime<Utc>,
+) -> crate::error::HarvestResult<DecommissionOutcome> {
+    use diesel::prelude::*;
     use diesel_async::RunQueryDsl;
+
+    use crate::schema::harvest_audit_export_cursor::dsl as cur;
+
+    let cursor: Option<crate::models::AuditExportCursor> = cur::harvest_audit_export_cursor
+        .find(shard_id)
+        .select(crate::models::AuditExportCursor::as_select())
+        .for_update()
+        .first(conn)
+        .await
+        .optional()
+        .map_err(crate::error::database_error)?;
+
+    let Some(cursor) = cursor else {
+        return Ok(DecommissionOutcome::NotConfigured);
+    };
+    if cursor.retired_at.is_some() {
+        return Ok(DecommissionOutcome::AlreadyRetired);
+    }
 
     // Bumping `claim_epoch` invalidates any delivery still in flight (issue
     // #953, Codex review round 13 P2). `apply_outcome` is guarded on
@@ -979,22 +1067,107 @@ pub async fn decommission_cursor(
     // before the retirement could land after it -- advancing the cursor or
     // writing backoff state onto a row the status route now reports as a
     // frozen `RETIRED` snapshot, and racing retention, which is permitted to
-    // purge the shard the moment it is retired. This is exactly what the epoch
-    // is for: it already exists so a slow attempt whose HTTP call outlives its
-    // lease cannot apply a stale outcome over a fresher one. Clearing
-    // `lease_until` in the same statement means the row does not also read as
-    // mid-delivery.
-    let retired = diesel::sql_query(
-        "UPDATE harvest_audit_export_cursor \
-         SET retired_at = NOW(), updated_at = NOW(), \
-             claim_epoch = claim_epoch + 1, lease_until = NULL \
-         WHERE shard_id = $1 AND retired_at IS NULL",
+    // purge the shard the moment it is retired. Clearing `lease_until` in the
+    // same statement means the row does not also read as mid-delivery.
+    diesel::update(cur::harvest_audit_export_cursor.find(shard_id))
+        .set((
+            cur::retired_at.eq(Some(now)),
+            cur::updated_at.eq(now),
+            cur::claim_epoch.eq(cursor.claim_epoch + 1),
+            cur::lease_until.eq(None::<DateTime<Utc>>),
+        ))
+        .execute(conn)
+        .await
+        .map_err(crate::error::database_error)?;
+    Ok(DecommissionOutcome::Retired)
+}
+
+/// Reactivate a shard's retired export cursor.
+///
+/// Opens its own transaction. The management route pairs the reactivation
+/// with its own audit record, so it uses [`reactivate_cursor_locked`] instead
+/// — see that function.
+///
+/// # Errors
+/// Returns `HarvestError` on a database failure.
+#[cfg(feature = "db")]
+pub async fn reactivate_cursor(
+    conn: &mut diesel_async::AsyncPgConnection,
+    shard_id: i32,
+    now: DateTime<Utc>,
+) -> crate::error::HarvestResult<ReactivateOutcome> {
+    use diesel_async::AsyncConnection;
+
+    Box::pin(
+        conn.transaction::<ReactivateOutcome, crate::error::HarvestError, _>(async |conn| {
+            reactivate_cursor_locked(conn, shard_id, now).await
+        }),
     )
-    .bind::<diesel::sql_types::Integer, _>(shard_id)
-    .execute(conn)
     .await
-    .map_err(crate::error::database_error)?;
-    Ok(retired > 0)
+}
+
+/// [`reactivate_cursor`] without the surrounding transaction.
+///
+/// The **explicit reactivate step** for audit export (issue #1273). It
+/// resumes a shard [`decommission_cursor_locked`] retired, from the
+/// preserved `last_assigned_seq`. New records continue the sequence, rather
+/// than re-issuing numbers a receiver already holds against different
+/// records.
+///
+/// This used to happen as a side effect of [`ensure_cursor_row`]: the next
+/// scanner tick after a re-enable un-retired the row on its own. That made
+/// resumption racy and silent. A scanner tick already under way when an
+/// operator retired a shard could un-retire it moments later. Neither
+/// transition left a record of who asked for it. Reactivation is now its
+/// own operator action, audited exactly like [`decommission_cursor_locked`].
+///
+/// **Must be called inside a transaction.** On an autocommit connection the
+/// row lock below is released before the caller can pair it with anything.
+///
+/// # Errors
+/// Returns `HarvestError` on a database failure.
+#[cfg(feature = "db")]
+pub async fn reactivate_cursor_locked(
+    conn: &mut diesel_async::AsyncPgConnection,
+    shard_id: i32,
+    now: DateTime<Utc>,
+) -> crate::error::HarvestResult<ReactivateOutcome> {
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+
+    use crate::schema::harvest_audit_export_cursor::dsl as cur;
+
+    let cursor: Option<crate::models::AuditExportCursor> = cur::harvest_audit_export_cursor
+        .find(shard_id)
+        .select(crate::models::AuditExportCursor::as_select())
+        .for_update()
+        .first(conn)
+        .await
+        .optional()
+        .map_err(crate::error::database_error)?;
+
+    let Some(cursor) = cursor else {
+        return Ok(ReactivateOutcome::NotConfigured);
+    };
+    if cursor.retired_at.is_none() {
+        return Ok(ReactivateOutcome::AlreadyActive);
+    }
+
+    // Bumps `claim_epoch` for the same reason decommission does: every
+    // lifecycle transition invalidates a delivery attempt claimed under an
+    // older one. No claim can be outstanding on a retired row today, since
+    // a retired cursor is not claimable. So this guards a future change to
+    // that rule, not a live hazard.
+    diesel::update(cur::harvest_audit_export_cursor.find(shard_id))
+        .set((
+            cur::retired_at.eq(None::<DateTime<Utc>>),
+            cur::updated_at.eq(now),
+            cur::claim_epoch.eq(cursor.claim_epoch + 1),
+        ))
+        .execute(conn)
+        .await
+        .map_err(crate::error::database_error)?;
+    Ok(ReactivateOutcome::Reactivated)
 }
 
 /// The `MAX(export_seq)` read back from the sequence-assignment statement —
@@ -1053,15 +1226,17 @@ pub async fn claim_shard(
                 return Ok(None);
             };
 
-            // A retired cursor is inert (issue #953, Codex review round 14 P2).
-            // `export_once_on_conn` calls `ensure_cursor_row` first, which
-            // un-retires, so in the ordinary flow a running exporter never sees
-            // this. The window is a `decommission_cursor` that commits between
-            // that call and this locked read: without the check the scanner
-            // takes a NEW claim and delivers a batch after the retirement.
-            // Bumping the epoch on retirement only invalidates claims taken
-            // *before* it, so this is the other half of that fix -- and it
-            // matters because retention is permitted to purge the shard's
+            // A retired cursor is inert (issue #953; issue #1273).
+            // `export_once_on_conn` calls `ensure_cursor_row` first. That
+            // call never un-retires a row. So a decommissioned shard reaches
+            // this check on every tick, not just in a narrow race window.
+            //
+            // A decommission that commits between `ensure_cursor_row` and
+            // this locked read hits the same check. Without it, the scanner
+            // would take a new claim and deliver a batch after the
+            // retirement. Bumping the epoch on retirement only invalidates
+            // claims taken *before* it. So this is the other half of that
+            // fix. It matters because retention may purge the shard's
             // records the moment it is retired.
             if cursor.retired_at.is_some() {
                 return Ok(None);

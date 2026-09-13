@@ -2946,7 +2946,7 @@ invisible to detection is growing, and the audit table is growing with it.
    |---|---|
    | `last_error` populated, `delivery_state: "BACKOFF"` | The sink is rejecting or unreachable. The cursor is parked, retrying with capped backoff. |
    | `delivery_state: "NOT_STARTED"` that persists across reads | No exporter has ever ticked this shard. Either export is configured nowhere, or it is configured only on a fleet that is not reaching this shard. |
-   | `delivery_state: "RETIRED"` | An operator ran `decommission_cursor` here. No exporter owes this shard records and retention may purge them — this is a deliberate state, not a fault. |
+   | `delivery_state: "RETIRED"` | An operator ran `POST /admin/audit-export/decommission` here. No exporter owes this shard records and retention may purge them — this is a deliberate state, not a fault. |
    | No `harvest_audit_export_lag` series at all | No exporter is running for that shard. **Worse than a high value**, and a threshold alert cannot see it. |
 
 3. Check `pending_records` on the same response to size the backlog, and
@@ -3057,15 +3057,23 @@ no supported way to skip an audit record — that is the point of the feature.
   process running retention — deliberately, so that a worker outage cannot let
   a web process delete the records that outage stranded. Relieving the disk
   pressure takes two steps: stop the exporter, then explicitly retire the
-  cursor with `audit_export::decommission_cursor(&mut conn, shard_id)`. The
-  next retention tick then purges that shard's aged rows normally.
+  cursor:
+
+  ```bash
+  curl -X POST https://app.example.com/api/harvest/admin/audit-export/decommission \
+    -H 'Content-Type: application/json' \
+    -d '{"shard": <shard_id>}'
+  ```
+
+  The next retention tick then purges that shard's aged rows normally.
 
   This permanently gives up the un-exported window: those records will never
-  reach the SIEM. Treat it as a decision with a paper trail and a
-  security/compliance sign-off, not a cleanup step. It is reversible in the
-  sense that re-enabling export later continues the sequence correctly (a
-  recreated cursor seeds its high-water mark from the rows already stamped) —
-  but the records purged in between are gone.
+  reach the SIEM. Treat it as a decision with a security/compliance sign-off,
+  not a cleanup step — the route writes its own audit record
+  (`audit_export.decommission`), so the paper trail is automatic. It is
+  reversible in the sense that `POST /admin/audit-export/reactivate` later
+  continues the sequence correctly (the cursor's high-water mark survives
+  the purge) — but the records purged in between are gone.
 - Escalate to the security/compliance owner, not only the platform team: the
   question "were privileged actions logged during this window?" is theirs to
   answer.

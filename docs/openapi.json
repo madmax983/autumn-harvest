@@ -639,6 +639,112 @@
         "x-harvest-route-class": "read_only"
       }
     },
+    "/admin/audit-export/decommission": {
+      "post": {
+        "description": "Retire one shard's audit-export cursor, permitting retention to purge its aged audit records (issue #953, issue #1273). This is the audited front door for what used to be a bare library call with no route, no auth gate, and no audit trail at all -- retirement discards the compliance guarantee over any record the shard has not yet shipped, so an auditor must be able to name who authorised that. The retirement and its audit record (`audit_export.decommission`) are one transaction on one connection, on the target shard's own connection, exactly like the redrive route. A shard already retired, or never configured, changes nothing but is still audited: an auditor needs the record of the request, not only of requests that had an effect.",
+        "operationId": "post_admin_audit_export_decommission",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "shard": {
+                    "description": "Shard whose export cursor to retire."
+                  }
+                },
+                "required": [
+                  "shard"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "outcome": {},
+                    "shard": {}
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`outcome` is `retired` on a genuine transition, or `already_retired` when the shard was already retired (a no-op that is still audited). Retiring bumps the shard's claim epoch and clears its lease, so a delivery already in flight cannot acknowledge over the retirement -- the same fencing the redrive route uses."
+          },
+          "404": {
+            "description": "The named shard has no audit-export cursor: audit export has never run there."
+          },
+          "503": {
+            "description": "Harvest storage is not configured, the named shard is unreachable, or the audit record for this decommission could not be written. The retirement and its audit record commit together, so a 503 from the audit write means the cursor was NOT retired."
+          }
+        },
+        "summary": "Retire one shard's audit-export cursor, permitting retention to purge its aged audit records (issue #953, issue #1273).",
+        "tags": [
+          "admin"
+        ],
+        "x-harvest-idempotency": "Idempotent in effect: the cursor ends up retired. A repeat call reports `already_retired` rather than erroring, and still writes its own audit record.",
+        "x-harvest-read-only": false,
+        "x-harvest-route-class": "mutating"
+      }
+    },
+    "/admin/audit-export/reactivate": {
+      "post": {
+        "description": "Reactivate one shard's retired audit-export cursor, resuming from the preserved sequence high-water mark (issue #1273). The inverse of `POST /admin/audit-export/decommission`, audited the same way. Resuming export used to happen as an implicit side effect of the exporter's next scanner tick, which raced a concurrent decommission and left no record of who decided to resume it; `ensure_cursor_row` no longer reactivates a retired cursor under any circumstance, so this route is now the only way back from `RETIRED` to live.",
+        "operationId": "post_admin_audit_export_reactivate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "shard": {
+                    "description": "Shard whose export cursor to reactivate."
+                  }
+                },
+                "required": [
+                  "shard"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "outcome": {},
+                    "shard": {}
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "`outcome` is `reactivated` on a genuine transition, or `already_active` when the shard was already live (a no-op that is still audited). New records continue the preserved sequence rather than restarting at 0, so a receiver deduping on `(shard, seq)` never sees a reused pair naming a different record."
+          },
+          "404": {
+            "description": "The named shard has no audit-export cursor: audit export has never run there."
+          },
+          "503": {
+            "description": "Harvest storage is not configured, the named shard is unreachable, or the audit record for this reactivation could not be written. The reactivation and its audit record commit together, so a 503 from the audit write means the cursor was NOT reactivated."
+          }
+        },
+        "summary": "Reactivate one shard's retired audit-export cursor, resuming from the preserved sequence high-water mark (issue #1273).",
+        "tags": [
+          "admin"
+        ],
+        "x-harvest-idempotency": "Idempotent in effect: the cursor ends up active. A repeat call reports `already_active` rather than erroring, and still writes its own audit record.",
+        "x-harvest-read-only": false,
+        "x-harvest-route-class": "mutating"
+      }
+    },
     "/admin/audit-export/redrive": {
       "post": {
         "description": "Rewind one shard's audit-export cursor so already-delivered audit records are re-exported to the SIEM sink (issue #953), for recovery after sink-side data loss. Re-exported records are byte-identical -- the per-record export sequence is never re-stamped, so a record carries the same (shard, seq) and the same JSON on every delivery and the receiver dedupes on that pair. A cursor may only ever move BACKWARDS: a request that would move it forward, or leave it where it is, is refused with 400 rather than applied, because advancing it would mark records delivered that never were. The `before` form resolves to one below the LOWEST sequence assigned to a record at or after that instant, so any clock/commit-order skew makes the rewind reach further back (costing duplicate deliveries the receiver dedupes) rather than skipping records. The redrive itself writes an audit record (`audit_export.redrive`) in the same transaction as the rewind, so re-exporting is as auditable as the operations being exported.",

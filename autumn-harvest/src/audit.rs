@@ -122,6 +122,21 @@ pub const OP_RATE_LIMIT_PACING_OVERRIDE_CLEAR: &str = "rate_limit.pacing_overrid
 /// that a rewind can only ever move a cursor BACKWARDS; the route refuses a
 /// forward request rather than recording one.
 pub const OP_AUDIT_EXPORT_REDRIVE: &str = "audit_export.redrive";
+/// Audit operation: Retired a shard's audit-export cursor, permitting
+/// retention to purge its aged records (issue #953, issue #1273).
+///
+/// This discards the compliance guarantee over any record the shard had not
+/// yet shipped. An auditor must be able to name who authorised that, so the
+/// route is admin-gated and audited like every other privileged action here.
+pub const OP_AUDIT_EXPORT_DECOMMISSION: &str = "audit_export.decommission";
+/// Audit operation: Reactivated a shard's retired audit-export cursor
+/// (issue #1273).
+///
+/// The inverse of [`OP_AUDIT_EXPORT_DECOMMISSION`]. Resuming export used to
+/// be an implicit side effect of the exporter's next scanner tick. It is now
+/// its own explicit, audited operator action, for the same reason
+/// retirement is: an auditor must name who decided to resume it.
+pub const OP_AUDIT_EXPORT_REACTIVATE: &str = "audit_export.reactivate";
 /// Audit operation: Set (or updated) a TTL'd runtime pacing override on a
 /// declared workflow-start throttle (issue #945).
 ///
@@ -779,6 +794,10 @@ pub const CLASSIFIED_ROUTES: &[(&str, RouteClass)] = &[
     ),
     // Rewinds a shard's audit-export cursor (issue #953): mutating, audited.
     ("POST /admin/audit-export/redrive", RouteClass::Mutating),
+    // Retires or reactivates a shard's audit-export cursor (issue #1273):
+    // mutating, audited.
+    ("POST /admin/audit-export/decommission", RouteClass::Mutating),
+    ("POST /admin/audit-export/reactivate", RouteClass::Mutating),
     // Calendar + completion-trigger CRUD. No dedicated audit op constant yet
     // (audit wiring is out of scope for #776); disposition is EXCLUDED_ROUTES.
     ("POST /admin/completion-triggers", RouteClass::Mutating),
@@ -831,8 +850,11 @@ pub const AUDITED_OPERATIONS: &[&str] = &[
     OP_RATE_LIMIT_PACING_OVERRIDE_CLEAR,
     OP_START_THROTTLE_PACING_OVERRIDE_SET,
     OP_START_THROTTLE_PACING_OVERRIDE_CLEAR,
-    // Audit-export cursor redrive (issue #953)
+    // Audit-export cursor redrive (issue #953), decommission and reactivate
+    // (issue #1273)
     OP_AUDIT_EXPORT_REDRIVE,
+    OP_AUDIT_EXPORT_DECOMMISSION,
+    OP_AUDIT_EXPORT_REACTIVATE,
     OP_BUILD_POLICY_SET,
     OP_BUILD_COMPAT_DECLARE,
     OP_BUILD_COMPAT_REVOKE,
@@ -1369,10 +1391,19 @@ pub const ALL_MUTATION_ROUTES: &[(&str, Option<&str>)] = &[
         Some(OP_CIRCUIT_FORCE_CLOSE),
     ),
     // Audit export (issue #953): read-only status, and the audited redrive.
+    // Decommission and reactivate (issue #1273) are audited the same way.
     ("GET /admin/audit-export", None),
     (
         "POST /admin/audit-export/redrive",
         Some(OP_AUDIT_EXPORT_REDRIVE),
+    ),
+    (
+        "POST /admin/audit-export/decommission",
+        Some(OP_AUDIT_EXPORT_DECOMMISSION),
+    ),
+    (
+        "POST /admin/audit-export/reactivate",
+        Some(OP_AUDIT_EXPORT_REACTIVATE),
     ),
     ("POST /admin/completion-triggers", None),
     ("POST /calendars", None),

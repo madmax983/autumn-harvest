@@ -252,13 +252,15 @@ timeout cannot distinguish "export was intentionally removed" from "the worker
 has been down since Friday", and it resolves that ambiguity by deleting audit
 records during exactly the outage where they matter most.
 
-### Retiring audit export on a shard
+### Retiring and reactivating audit export on a shard
 
-Because the guard never expires on its own, turning export off is an explicit
-operator action:
+Because the guard never expires on its own, turning export off is an explicit,
+audited operator action (issue #1273):
 
-```rust
-autumn_harvest::audit_export::decommission_cursor(&mut conn, shard_id).await?;
+```bash
+curl -X POST https://app.example.com/api/harvest/admin/audit-export/decommission \
+  -H 'Content-Type: application/json' \
+  -d '{"shard": 0}'
 ```
 
 This marks the cursor **retired**; the row itself is never deleted, because its
@@ -267,23 +269,46 @@ retention ignores it, a redrive against that shard is refused with `404` rather
 than reporting a rewind whose records nothing will ship, the status route
 reports `delivery_state: "RETIRED"` with a zero backlog, and any delivery still
 in flight is invalidated — retiring bumps the cursor's `claim_epoch`, so an
-attempt claimed beforehand can no longer apply its outcome afterwards. Retiring is what tells
-retention that nothing owes this shard records any more, so the next sweep
-purges its aged audit rows normally. Do this
-only once you accept that any records the shard had not yet shipped will never
-reach the SIEM.
+attempt claimed beforehand can no longer apply its outcome afterwards. Retiring
+is what tells retention that nothing owes this shard records any more, so the
+next sweep purges its aged audit rows normally. Do this only once you accept
+that any records the shard had not yet shipped will never reach the SIEM.
+
+**The decommission is itself audited** (`audit_export.decommission`), in the
+same one-transaction-one-connection shape as a redrive: an
+applied-but-unaudited retirement is not representable. A shard already
+retired, or never configured, changes nothing but is still audited — the
+answer to "who asked to give up this compliance window" cannot depend on
+whether the request happened to be the first one.
 
 Stopping the exporter alone does **not** restore purging — the guard keys on
 the cursor row, not on the sweeping process's sink configuration, which is what
 makes it safe across a split web/worker deployment. Both steps are required.
 
-Re-enabling export afterwards is safe: the next exporter tick un-retires the
-cursor and resumes from the preserved `last_assigned_seq`, so new records
-continue the sequence instead of re-issuing numbers that already name different
-records — which a receiver deduping on `(shard, seq)`, exactly as this document
-instructs it to, would silently discard. This holds even when retention purged
-every stamped row in the meantime, which is why the cursor is retired rather
-than deleted. Records purged while retired are gone and are not re-delivered.
+Resuming export is the sibling route:
+
+```bash
+curl -X POST https://app.example.com/api/harvest/admin/audit-export/reactivate \
+  -H 'Content-Type: application/json' \
+  -d '{"shard": 0}'
+```
+
+This is safe: it resumes from the preserved `last_assigned_seq`, so new
+records continue the sequence instead of re-issuing numbers that already name
+different records — which a receiver deduping on `(shard, seq)`, exactly as
+this document instructs it to, would silently discard. This holds even when
+retention purged every stamped row in the meantime, which is why the cursor is
+retired rather than deleted. Records purged while retired are gone and are not
+re-delivered.
+
+Reactivation used to be an implicit side effect of the exporter's next scanner
+tick, which had two problems (issue #1273): a scanner tick already under way
+when an operator decommissioned a shard could un-retire it moments later with
+no coordination, silently undoing the operator's decision; and resuming export
+had no audit trail of its own, same as decommissioning did not. Reactivation
+is now this dedicated, audited route, and `ensure_cursor_row` never clears
+`retired_at` under any circumstance — the only way from `RETIRED` back to live
+is this call.
 
 Until then, a sink left down indefinitely lets the audit table grow past its
 retention window. That is the deliberate trade — unbounded growth is loud
@@ -371,8 +396,8 @@ Read-only, admin-gated, cross-shard.
 ```
 
 `delivery_state` is `IDLE`, `DELIVERING`, `BACKOFF`, `RETRYING`, `RETIRED`, or
-`NOT_STARTED`. `RETIRED` means an operator ran `decommission_cursor`: no
-exporter owes this shard records and retention may purge them, so the row's
+`NOT_STARTED`. `RETIRED` means an operator ran `POST /admin/audit-export/decommission`:
+no exporter owes this shard records and retention may purge them, so the row's
 other fields are a frozen snapshot rather than live state.
 
 `sink_configured` reports whether **the process serving this request** has a
