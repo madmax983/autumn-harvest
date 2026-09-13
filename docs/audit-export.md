@@ -421,6 +421,12 @@ Three properties worth knowing:
   and timestamp order can disagree; anchoring this way means any skew makes the
   rewind reach *further back* (costing duplicate deliveries your receiver
   dedupes) rather than skipping records the operator asked for.
+  **Known gap (issue #1508):** that lowest sequence is found among *surviving*
+  rows. If retention already purged the earliest records at or after the
+  instant, `before` silently resolves as if they were never part of the
+  window — `already_purged_records` (below) cannot see a prefix the resolver
+  itself already dropped. `to_seq` does not have this gap: it names an exact
+  position, so `already_purged_records` is exact for it.
 - **The redrive is itself audited** (`audit_export.redrive`), so re-exporting is
   as auditable as the operations being exported. The rewind and its audit
   record are **one transaction on one connection** — the audit row is written
@@ -437,9 +443,19 @@ Three properties worth knowing:
   moved, and the trail must not say otherwise.
 - **It invalidates in-flight deliveries.** The rewind bumps the shard's claim
   epoch, so a batch already in flight cannot acknowledge over it.
+- **The response says what it can actually deliver, not just what you asked
+  for** (issue #1267). Retention does not take the cursor row's lock, so a
+  sweep can read the cursor before this redrive rewinds it and purge part of
+  the window the redrive is about to promise back. The `200` response carries
+  `recoverable_records` — records in `(to, from]` that still exist, counted
+  in the same transaction as the rewind — and `already_purged_records`, the
+  rest of that window, gone before this redrive could reach it.
+  `already_purged_records` is `0` on the common path, where nothing raced the
+  rewind.
 
 Only records still present in the audit table can be re-exported; a redrive
-past the retention window returns whatever survives.
+past the retention window returns whatever survives, and
+`already_purged_records` in the response says how much that was.
 
 ---
 

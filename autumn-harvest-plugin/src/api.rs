@@ -7824,7 +7824,14 @@ pub const fn management_api_response_fields()
         (
             "POST",
             "/admin/audit-export/redrive",
-            Some(&["shard", "outcome", "from", "to"]),
+            Some(&[
+                "shard",
+                "outcome",
+                "from",
+                "to",
+                "recoverable_records",
+                "already_purged_records",
+            ]),
         ),
         ("GET", "/admin/rate-limits", None), // Vec<RateLimitBucketView> (declared baseline + effective/override state, issue #945)
         ("POST", "/admin/rate-limits/{key}", Some(&["ok"])),
@@ -37237,6 +37244,20 @@ struct AuditExportRedriveRequest {
     before: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// What `rewind_cursor_locked` decided, plus how much of it the database can
+/// actually deliver (issue #1267).
+///
+/// `recoverable_records` and `already_purged_records` are `0` unless
+/// `outcome` is [`RewindOutcome::Rewound`][rw]; a refused rewind moved
+/// nothing, so there is no window to measure.
+///
+/// [rw]: ::autumn_harvest::audit_export::RewindOutcome::Rewound
+struct RedriveApplied {
+    outcome: ::autumn_harvest::audit_export::RewindOutcome,
+    recoverable_records: i64,
+    already_purged_records: i64,
+}
+
 /// `POST /admin/audit-export/redrive` — rewind one shard's export cursor so
 /// already-delivered audit records are re-exported after sink-side data loss
 /// (issue #953 AC6).
@@ -37270,6 +37291,14 @@ struct AuditExportRedriveRequest {
 /// The audit row is shard-local anyway: it describes a shard-scoped mutation,
 /// carries that shard's id, and is picked up by that shard's own exporter, so
 /// it reaches the SIEM like every other audit record.
+///
+/// **The response reports what it can actually deliver, not the full window
+/// asked for** (issue #1267). Retention does not take the cursor row's lock.
+/// A sweep can read the pre-rewind cursor and purge part of the window this
+/// redrive is about to promise back. `recoverable_records` counts, inside
+/// this same transaction, the `(to, from]` rows that still exist.
+/// `already_purged_records` is the rest of the window. Those records are
+/// gone before this redrive could reach them.
 #[allow(clippy::too_many_lines)] // one mutation + its bound audit write
 async fn audit_export_redrive_handler(
     headers: axum::http::HeaderMap,
@@ -37315,16 +37344,30 @@ async fn audit_export_redrive_handler(
 
     let shard_pool = pool.exact_pool_for(::autumn_harvest::types::ShardId::new(request.shard));
 
-    let outcome: Result<::autumn_harvest::audit_export::RewindOutcome, String> = match shard_pool {
+    let applied: Result<RedriveApplied, String> = match shard_pool {
         Some(shard_pool) => match acquire_conn(shard_pool).await {
             Ok(mut conn) => {
-                use diesel_async::AsyncConnection as _;
                 let actor = actor.clone();
                 let source = source.clone();
                 let request_id = request_id.clone();
                 let target_label = target_label.clone();
-                Box::pin(conn.transaction::<
-                    ::autumn_harvest::audit_export::RewindOutcome,
+                // Pinned to READ COMMITTED, not inherited (issue #1267,
+                // matching `queue::claim_task`, `activity_pause`,
+                // `queue_pause`, the timeout enforcer, and the scheduler).
+                // The recoverable-records count below depends on seeing a
+                // retention purge that commits after this transaction's
+                // first statement. Under READ COMMITTED each statement gets
+                // a fresh snapshot, so that holds. Under REPEATABLE READ (or
+                // SERIALIZABLE), every statement shares one snapshot instead,
+                // taken at the cursor's `FOR UPDATE`. A purge committed after
+                // that point would stay invisible to the count. It would
+                // silently report full recovery of records already gone.
+                // Pinning the level on `BEGIN` keeps the guarantee
+                // independent of an operator's
+                // `default_transaction_isolation` setting.
+                let mut tx = conn.build_transaction().read_committed();
+                Box::pin(tx.run::<
+                    RedriveApplied,
                     ::autumn_harvest::error::HarvestError,
                     _,
                 >(async |conn| {
@@ -37336,14 +37379,32 @@ async fn audit_export_redrive_handler(
                     )
                     .await?;
 
+                    // A rewind that moved the cursor promises to redeliver
+                    // `(to, from]`. Retention does not take the cursor row's
+                    // lock. Part of that window can already be gone (issue
+                    // #1267). Count what survives, in this same transaction,
+                    // before the response claims anything.
+                    let (recoverable_records, already_purged_records) =
+                        ::autumn_harvest::audit_export::redrive_recovery_counts(conn, outcome)
+                            .await?;
+
                     // Only a rewind that actually moved the cursor is a
                     // SUCCEEDED privileged action; a refused request changed
                     // nothing and must not read as one in the trail.
                     let (status, detail) = match &outcome {
-                        ::autumn_harvest::audit_export::RewindOutcome::Rewound { from, to } => (
-                            STATUS_SUCCEEDED,
-                            Some(format!("cursor rewound from {from} to {to}")),
-                        ),
+                        ::autumn_harvest::audit_export::RewindOutcome::Rewound { from, to } => {
+                            let detail = if already_purged_records > 0 {
+                                format!(
+                                    "cursor rewound from {from} to {to}; {already_purged_records} \
+                                     of {} records in that window were already purged by \
+                                     retention and cannot be re-exported",
+                                    from - to
+                                )
+                            } else {
+                                format!("cursor rewound from {from} to {to}")
+                            };
+                            (STATUS_SUCCEEDED, Some(detail))
+                        }
                         ::autumn_harvest::audit_export::RewindOutcome::NoOp {
                             cursor,
                             requested,
@@ -37374,7 +37435,11 @@ async fn audit_export_redrive_handler(
                     };
                     // Same `conn`, same transaction as the rewind above.
                     audit::insert_audit(conn, &ar).await?;
-                    Ok(outcome)
+                    Ok(RedriveApplied {
+                        outcome,
+                        recoverable_records,
+                        already_purged_records,
+                    })
                 }))
                 .await
                 .map_err(|e: ::autumn_harvest::error::HarvestError| e.to_string())
@@ -37384,8 +37449,8 @@ async fn audit_export_redrive_handler(
         None => Err(format!("shard {} is not configured", request.shard)),
     };
 
-    let outcome = match outcome {
-        Ok(outcome) => outcome,
+    let applied = match applied {
+        Ok(applied) => applied,
         Err(error) => {
             // The transaction rolled back (or never opened), so nothing was
             // applied and there is no mutation to leave unrecorded. Record the
@@ -37417,7 +37482,7 @@ async fn audit_export_redrive_handler(
         }
     };
 
-    match outcome {
+    match applied.outcome {
         ::autumn_harvest::audit_export::RewindOutcome::Rewound { from, to } => (
             axum::http::StatusCode::OK,
             axum::Json(serde_json::json!({
@@ -37425,6 +37490,8 @@ async fn audit_export_redrive_handler(
                 "outcome": "rewound",
                 "from": from,
                 "to": to,
+                "recoverable_records": applied.recoverable_records,
+                "already_purged_records": applied.already_purged_records,
             })),
         )
             .into_response(),

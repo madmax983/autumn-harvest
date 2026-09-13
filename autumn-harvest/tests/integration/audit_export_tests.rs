@@ -825,6 +825,124 @@ async fn an_in_flight_acknowledgement_cannot_undo_a_redrive() {
     assert_eq!(cursor_acked(&mut conn, 0).await, 1, "the redrive stands");
 }
 
+// ── issue #1267: a redrive must report what it can actually deliver ─────────
+
+#[tokio::test]
+async fn redrive_recoverable_count_matches_the_full_window_when_nothing_was_purged() {
+    let _guard = TEST_SERIAL.lock().await;
+    let _sink = install(Arc::new(RecordingSink::new(200)), 100);
+    let (mut conn, _c) = make_conn().await;
+    insert_audit_rows(&mut conn, 5).await;
+    fire_due_audit_exports(&mut conn, &None, &[], &NoOpMetrics)
+        .await
+        .expect("tick");
+    uninstall();
+
+    let outcome = rewind_cursor(&mut conn, 0, RewindRequest::Seq(0), chrono::Utc::now())
+        .await
+        .expect("rewind");
+    assert_eq!(outcome, RewindOutcome::Rewound { from: 5, to: 0 });
+
+    // Drive the exact function the handler calls, on the outcome it actually
+    // got back, rather than re-typing `(from, to)` by hand.
+    let (recoverable, already_purged) =
+        autumn_harvest::audit_export::redrive_recovery_counts(&mut conn, outcome)
+            .await
+            .expect("counts");
+    assert_eq!(
+        recoverable, 5,
+        "every record in the redrive window still exists, so all 5 recover"
+    );
+    assert_eq!(already_purged, 0, "nothing raced this redrive");
+}
+
+// `redrive_recovery_counts` must not treat a refused rewind as a window to
+// measure. `NoOp` and `NotConfigured` moved nothing, so both counts are `0`,
+// and neither touches `harvest_audit_log`.
+#[tokio::test]
+async fn redrive_recovery_counts_is_zero_for_a_refused_rewind() {
+    let _guard = TEST_SERIAL.lock().await;
+    uninstall();
+    let (mut conn, _c) = make_conn().await;
+
+    let noop = RewindOutcome::NoOp {
+        cursor: 5,
+        requested: 5,
+    };
+    assert_eq!(
+        autumn_harvest::audit_export::redrive_recovery_counts(&mut conn, noop)
+            .await
+            .expect("counts"),
+        (0, 0)
+    );
+
+    assert_eq!(
+        autumn_harvest::audit_export::redrive_recovery_counts(
+            &mut conn,
+            RewindOutcome::NotConfigured
+        )
+        .await
+        .expect("counts"),
+        (0, 0)
+    );
+}
+
+// A retention sweep does not take the cursor row's lock. It can act on the
+// stale, pre-rewind cursor and purge part of the window a redrive is about
+// to promise back (issue #1267).
+//
+// Reproduce the race's end state directly. Records old enough and already
+// acknowledged are exactly what the purge removes, regardless of which
+// cursor value it read. Purging BEFORE the redrive therefore lands the
+// database in the same state a true interleaving would.
+#[tokio::test]
+async fn redrive_recoverable_count_falls_short_when_a_purge_already_removed_part_of_the_window() {
+    let _guard = TEST_SERIAL.lock().await;
+    let _sink = install(Arc::new(RecordingSink::new(200)), 100);
+    let (mut conn, _c) = make_conn().await;
+    insert_audit_rows(&mut conn, 5).await;
+    fire_due_audit_exports(&mut conn, &None, &[], &NoOpMetrics)
+        .await
+        .expect("tick");
+    assert_eq!(cursor_acked(&mut conn, 0).await, 5);
+
+    // Records 1-3 are old enough to purge; 4-5 are not.
+    diesel::update(harvest_audit_log::table.filter(harvest_audit_log::export_seq.le(3)))
+        .set(harvest_audit_log::occurred_at.eq(chrono::Utc::now() - chrono::Duration::days(365)))
+        .execute(&mut conn)
+        .await
+        .expect("age rows 1-3");
+    let deleted = purge_old_audit_records(&mut conn, 90)
+        .await
+        .expect("purge runs");
+    assert_eq!(deleted, 3, "retention purges the aged, acknowledged rows");
+    uninstall();
+
+    // An operator, unaware of the purge, redrives everything back to the start.
+    let outcome = rewind_cursor(&mut conn, 0, RewindRequest::Seq(0), chrono::Utc::now())
+        .await
+        .expect("rewind");
+    assert_eq!(
+        outcome,
+        RewindOutcome::Rewound { from: 5, to: 0 },
+        "the cursor still moves -- refusing the rewind would strand records 4-5, \
+         which really are recoverable"
+    );
+
+    let (recoverable, already_purged) =
+        autumn_harvest::audit_export::redrive_recovery_counts(&mut conn, outcome)
+            .await
+            .expect("counts");
+    assert_eq!(
+        recoverable, 2,
+        "only records 4-5 survive; the redrive must report 2, not the 5 it was asked for"
+    );
+    assert_eq!(
+        already_purged, 3,
+        "the 3 records retention already removed must be named, not silently dropped"
+    );
+}
+
 // ── AC5/AC7: metrics and status ──────────────────────────────────────────────
 
 #[tokio::test]
