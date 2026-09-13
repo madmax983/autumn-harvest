@@ -3895,7 +3895,7 @@
           "description": "A nested self-referential completion-trigger admission (cancelling an incumbent synchronously starts a new run under the same on_conflict = cancel_running key) left the key transiently over its declared limit \u2014 the outer admission is protected from being shed, so the nested pass has nothing left it may cancel. Self-healing on the next ordinary admission for the key (issue #1197)."
         },
         {
-          "id": 956,
+          "id": 957,
           "type": "timeseries",
           "title": "Quota supersede credit not shed",
           "datasource": {
