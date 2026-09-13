@@ -512,6 +512,14 @@ struct KeyRegistry {
     /// [`CODEC_LEGACY_KEY_ID`], which is also the resolution target for every
     /// kid-less stored envelope.
     active: String,
+    /// Count of live [`SweepKeyPin`] guards per key id (issue #1251).
+    ///
+    /// A re-encryption batch pins the key it is about to write rows onto for
+    /// the whole batch. [`PayloadCodecs::retire_key_local`] refuses a key with
+    /// a non-zero count here, under the same write lock that would otherwise
+    /// let it race a batch's own commit. Several shards can pin the same key
+    /// at once, so this counts rather than flags.
+    sweep_pins: BTreeMap<String, u64>,
 }
 
 impl Default for PayloadCodecs {
@@ -525,6 +533,7 @@ impl Default for PayloadCodecs {
             keyed: Arc::new(RwLock::new(KeyRegistry {
                 keys: BTreeMap::new(),
                 active: CODEC_LEGACY_KEY_ID.to_string(),
+                sweep_pins: BTreeMap::new(),
             })),
             any_keys: Arc::new(AtomicBool::new(false)),
         }
@@ -745,6 +754,69 @@ impl PayloadCodecs {
         self.keys_read().keys.get(key_id).map(Arc::clone)
     }
 
+    /// Pin `key_id` so it cannot be retired while the returned guard lives
+    /// (issue #1251).
+    ///
+    /// A re-encryption batch resolves its target key once and writes every row
+    /// of the batch under that exact id (see
+    /// [`crate::codec_rotation::reencrypt_event_payload_fields_under`]). Without
+    /// a pin, a second rotation can move the active key away from the batch's
+    /// target *while the batch is still running*.
+    /// [`PayloadCodecs::retire_key_local`] can then drop that target. Its own
+    /// census reads zero rows, because the batch has not committed yet. The
+    /// next row the batch writes then lands under a key that no longer has a
+    /// decoder anywhere: silent, permanent data loss.
+    ///
+    /// Call this once per batch, right after resolving the target key id, and
+    /// hold the guard for the whole batch. Retirement then fails closed
+    /// instead of racing: see [`PayloadCodecs::retire_key_local`].
+    ///
+    /// Several batches — one per shard, say — may pin the same key id at once;
+    /// the pin is a count, not a flag.
+    ///
+    /// This is `#[doc(hidden)] pub` rather than `pub(crate)`. The
+    /// batch-oriented public sweep entry point calls this internally. But
+    /// the race this guards is exercised directly by an integration test
+    /// outside this crate. Not part of the semver-stable surface.
+    #[doc(hidden)]
+    #[must_use = "dropping the guard immediately un-pins the key"]
+    pub fn pin_key_for_sweep(&self, key_id: &str) -> SweepKeyPin {
+        let mut guard = self.keys_write();
+        *guard.sweep_pins.entry(key_id.to_string()).or_insert(0) += 1;
+        drop(guard);
+        SweepKeyPin {
+            codecs: self.clone(),
+            key_id: key_id.to_string(),
+        }
+    }
+
+    /// Release one pin taken by [`PayloadCodecs::pin_key_for_sweep`].
+    ///
+    /// Only [`SweepKeyPin::drop`] calls this. A pin therefore always
+    /// releases, even when its batch returns early on an error. An unpin
+    /// lost to a failed batch would block that key's retirement forever.
+    fn unpin_key_for_sweep(&self, key_id: &str) {
+        let mut guard = self.keys_write();
+        if let Some(count) = guard.sweep_pins.get_mut(key_id) {
+            *count -= 1;
+            if *count == 0 {
+                guard.sweep_pins.remove(key_id);
+            }
+        }
+        drop(guard);
+    }
+
+    /// Whether an in-flight sweep batch currently holds a pin on `key_id`
+    /// (issue #1251). See [`PayloadCodecs::pin_key_for_sweep`].
+    ///
+    /// `#[doc(hidden)] pub` for the same reason as `pin_key_for_sweep`: an
+    /// integration test outside this crate asserts on it directly.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn is_pinned_by_sweep(&self, key_id: &str) -> bool {
+        self.keys_read().sweep_pins.contains_key(key_id)
+    }
+
     /// Drop `key_id` from this process's in-memory registry (issue #948).
     ///
     /// This is the **local** half of retirement and carries no storage
@@ -754,11 +826,18 @@ impl PayloadCodecs {
     ///
     /// # Errors
     ///
-    /// [`HarvestError::Config`] when `key_id` is the active key — retiring the
+    /// [`HarvestError::Config`] when `key_id` is the active key. Retiring the
     /// key new writes are being encoded under would immediately produce
-    /// undecodable history.
+    /// undecodable history. The same error applies when a sweep batch holds
+    /// a pin on it (issue #1251; see [`PayloadCodecs::pin_key_for_sweep`]).
     pub fn retire_key_local(&self, key_id: &str) -> HarvestResult<()> {
         let mut guard = self.keys_write();
+        if guard.sweep_pins.contains_key(key_id) {
+            return Err(HarvestError::Config(format!(
+                "codec key id {key_id:?} is pinned by an in-flight re-encryption sweep batch \
+                 and cannot be retired yet; retry once the batch completes"
+            )));
+        }
         if guard.active == key_id {
             return Err(HarvestError::Config(format!(
                 "codec key id {key_id:?} is the active key and cannot be retired; \
@@ -1273,6 +1352,24 @@ impl PayloadCodecs {
                 },
             ),
         }
+    }
+}
+
+/// RAII guard returned by [`PayloadCodecs::pin_key_for_sweep`] (issue #1251).
+///
+/// Holds one key id pinned against retirement for as long as the guard lives.
+/// Dropping it always releases the pin — on the happy path, and on an early
+/// return from a batch that hit an error. A failed batch can therefore
+/// never leave a key permanently unretirable.
+#[must_use = "the key is pinned only while this guard is alive; dropping it immediately un-pins"]
+pub struct SweepKeyPin {
+    codecs: PayloadCodecs,
+    key_id: String,
+}
+
+impl Drop for SweepKeyPin {
+    fn drop(&mut self) {
+        self.codecs.unpin_key_for_sweep(&self.key_id);
     }
 }
 
@@ -2671,6 +2768,72 @@ mod tests {
             .expect("retire the inactive key");
         assert_eq!(codecs.registered_key_ids(), vec!["k2".to_string()]);
         assert!(codecs.codec_for_key("k1").is_none());
+    }
+
+    /// Issue #1251: a sweep batch pins the key it is writing onto.
+    /// Retirement must refuse that key while the pin holds. That holds even
+    /// though a zero census -- no rows committed under it yet -- would
+    /// otherwise say it is safe.
+    #[test]
+    fn retire_key_local_refuses_a_key_pinned_by_a_sweep_batch() {
+        let codecs = PayloadCodecs::default();
+        codecs
+            .register_key("k1", Arc::new(XorCodec(1)))
+            .expect("register k1");
+        codecs
+            .register_key("k2", Arc::new(XorCodec(2)))
+            .expect("register k2");
+        codecs.set_active_key("k2").expect("activate k2");
+
+        let pin = codecs.pin_key_for_sweep("k1");
+        assert!(codecs.is_pinned_by_sweep("k1"));
+
+        let err = codecs
+            .retire_key_local("k1")
+            .expect_err("a pinned key must not be retirable");
+        assert!(matches!(err, HarvestError::Config(_)), "{err:?}");
+        assert_eq!(
+            codecs.registered_key_ids(),
+            vec!["k1".to_string(), "k2".to_string()],
+            "the refused retirement must not have removed the key"
+        );
+
+        drop(pin);
+        assert!(!codecs.is_pinned_by_sweep("k1"));
+        codecs
+            .retire_key_local("k1")
+            .expect("retirable once the pin is released");
+    }
+
+    /// Several batches -- one per shard -- can pin the same key id at once.
+    /// The key must stay protected until every pin on it releases, not just
+    /// the first.
+    #[test]
+    fn a_key_pinned_by_two_batches_stays_protected_until_both_release() {
+        let codecs = PayloadCodecs::default();
+        codecs
+            .register_key("k1", Arc::new(XorCodec(1)))
+            .expect("register k1");
+        codecs
+            .register_key("k2", Arc::new(XorCodec(2)))
+            .expect("register k2");
+        codecs.set_active_key("k2").expect("activate k2");
+
+        let pin_a = codecs.pin_key_for_sweep("k1");
+        let pin_b = codecs.pin_key_for_sweep("k1");
+
+        drop(pin_a);
+        assert!(
+            codecs.is_pinned_by_sweep("k1"),
+            "one release must not clear a second, still-live pin"
+        );
+        assert!(codecs.retire_key_local("k1").is_err());
+
+        drop(pin_b);
+        assert!(!codecs.is_pinned_by_sweep("k1"));
+        codecs
+            .retire_key_local("k1")
+            .expect("retirable once both pins are released");
     }
 
     /// The `any_keys` mirror must be published **under** the map lock.

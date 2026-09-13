@@ -32,6 +32,9 @@
 //!   covered in the plugin crate's `codec_rotation_admin_integration.rs`.
 //! - **AC8** (composition with offload / erasure) —
 //!   [`offload_envelopes_and_tombstones_survive_a_sweep_untouched`].
+//! - **Issue #1251** (a sweep batch cannot commit a row under a key retired
+//!   mid-batch) —
+//!   [`a_batch_pinned_to_a_key_blocks_its_retirement_through_a_double_rotation`].
 //! - **Issue #1257** (`write_cursor` is a compare-and-swap; DR fencing on the
 //!   cursor writers) — [`a_stale_cursor_write_cannot_overwrite_newer_progress`],
 //!   [`a_stale_rewind_cannot_decrease_rows_reencrypted`],
@@ -1415,6 +1418,182 @@ async fn retirement_via_the_structural_gate_refuses_a_purely_local_flip() {
     .await
     .expect("the escape hatch skips the structural gate");
     assert!(codecs.codec_for_key("k1").is_none());
+}
+
+// ── issue #1251: retirement racing a pinned in-flight sweep batch ───────────
+
+#[tokio::test]
+async fn a_batch_pinned_to_a_key_blocks_its_retirement_through_a_double_rotation() {
+    // Issue #1251. A batch resolves its target key once and pins it before
+    // writing any row. Without the pin, this exact interleaving lets a row
+    // land under a key that retirement already dropped:
+    //
+    //   1. A batch starts, targets k2 (the active key), and pins it.
+    //   2. The active key rotates AWAY from k2 twice (k2 -> k1 -> k3), so k2
+    //      is no longer active and looks retirable.
+    //   3. `retire_codec_key("k2")` census reads zero rows -- the batch has
+    //      not committed anything yet -- and WOULD succeed without the pin.
+    //   4. The batch's write lands under k2, a key that retirement just
+    //      dropped: silent, permanent data loss.
+    //
+    // The pin closes step 3: retirement is refused for as long as the batch
+    // holds it, by construction, not by timing.
+    use autumn_harvest::codec_rotation::{
+        compare_and_swap_event, reencrypt_event_payload_fields_under,
+    };
+    use autumn_harvest::schema::harvest_events;
+
+    let (url, _c) = setup_isolated_db().await;
+    let mut conn = connect(&url).await;
+    let codecs = two_key_registry();
+    let exec_id = insert_execution(&mut conn, "pinned_retire").await;
+    append_under_key(
+        &mut conn,
+        &codecs,
+        exec_id,
+        "k1",
+        0,
+        &[started(json!({"ssn": "123-45-6789"}))],
+    )
+    .await;
+    codecs.set_active_key("k2").expect("flip to k2");
+
+    let pool = build_pool(&url);
+    let sharded = ShardedDbPool::single(pool);
+    let shards = [ShardId::new(0)];
+
+    // 1. A batch starts: it resolves k2 as its target and pins it, before
+    // reading or writing a single row.
+    let pin = codecs.pin_key_for_sweep("k2");
+
+    // 2. A double rotation moves the active key away from k2.
+    codecs.set_active_key("k1").expect("rotation 1");
+    codecs
+        .register_key("k3", Arc::new(XorCodec(0x33)))
+        .expect("register k3");
+    codecs.set_active_key("k3").expect("rotation 2");
+
+    // 3. The census would read zero rows under k2 -- the batch has not
+    // written anything yet -- but the pin refuses the retirement outright.
+    let err = retire_codec_key(
+        &sharded,
+        &shards,
+        &codecs,
+        "k2",
+        FleetWriteFence::ConfirmedByOperator,
+        Duration::ZERO,
+        Duration::ZERO,
+    )
+    .await
+    .expect_err("a pinned key must not be retirable, even at a zero census");
+    match err {
+        HarvestError::Config(msg) => {
+            assert!(
+                msg.contains("pinned"),
+                "the refusal must name the pin, got {msg:?}"
+            );
+        }
+        other => panic!("expected Config, got {other:?}"),
+    }
+    assert!(
+        codecs.codec_for_key("k2").is_some(),
+        "the refused retirement must not have dropped the decoder"
+    );
+
+    // 4. The batch continues and commits its row under its pinned target,
+    // k2 -- exactly the write the bug let land under an already-retired key.
+    let row_id: i64 = harvest_events::table
+        .filter(harvest_events::workflow_exec_id.eq(exec_id.as_uuid()))
+        .select(harvest_events::id)
+        .first(&mut conn)
+        .await
+        .expect("row id");
+    let original: Value = harvest_events::table
+        .find(row_id)
+        .select(harvest_events::event_data)
+        .first(&mut conn)
+        .await
+        .expect("read row");
+    let mut candidate = original.clone();
+    reencrypt_event_payload_fields_under(&codecs, "k2", &mut candidate)
+        .expect("the pinned target is still registered, so this succeeds");
+    let swapped = compare_and_swap_event(&mut conn, ShardId::new(0), row_id, &original, &candidate)
+        .await
+        .expect("cas");
+    assert!(swapped, "the batch's write must land");
+
+    let rows = raw_event_data(&mut conn, exec_id).await;
+    assert_eq!(
+        kid_of(&rows[0], "input"),
+        Some("k2".to_string()),
+        "the row committed under its pinned target, not a retired key"
+    );
+
+    // History must still be fully decodable: k2 was never actually retired.
+    let history = store::load_history_with_codecs(&mut conn, exec_id, &codecs)
+        .await
+        .expect("history must decode: k2 is still registered");
+    match &history.events[0] {
+        WorkflowEvent::WorkflowStarted { input, .. } => {
+            assert_eq!(input, &json!({"ssn": "123-45-6789"}));
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+
+    // While the pin is still held, retirement of k2 stays refused for the
+    // same reason, even though a row now genuinely exists under it too.
+    assert!(
+        retire_codec_key(
+            &sharded,
+            &shards,
+            &codecs,
+            "k2",
+            FleetWriteFence::ConfirmedByOperator,
+            Duration::ZERO,
+            Duration::ZERO,
+        )
+        .await
+        .is_err()
+    );
+
+    // Once the batch finishes and releases its pin, the ordinary census-based
+    // gate takes back over. It correctly refuses for the ordinary reason,
+    // because a row genuinely references k2 now.
+    drop(pin);
+    assert!(!codecs.is_pinned_by_sweep("k2"));
+    let err = retire_codec_key(
+        &sharded,
+        &shards,
+        &codecs,
+        "k2",
+        FleetWriteFence::ConfirmedByOperator,
+        Duration::ZERO,
+        Duration::ZERO,
+    )
+    .await
+    .expect_err("k2 genuinely has a row now; retirement must still refuse it");
+    assert!(
+        matches!(err, HarvestError::CodecKeyRetirementBlocked { .. }),
+        "the refusal reason must now be the ordinary census, not the pin: {err:?}"
+    );
+
+    // A later pass converges the row onto the current active key. Only
+    // then does retirement of k2 succeed -- the fix does not deadlock it.
+    sweep_codec_reencryption_once(&mut conn, 0, &codecs, 100, &NoOpMetrics)
+        .await
+        .expect("sweep onto k3");
+    retire_codec_key(
+        &sharded,
+        &shards,
+        &codecs,
+        "k2",
+        FleetWriteFence::ConfirmedByOperator,
+        Duration::ZERO,
+        Duration::ZERO,
+    )
+    .await
+    .expect("k2 is retirable once no row references it and no pin holds it");
+    assert!(codecs.codec_for_key("k2").is_none());
 }
 
 /// The escape hatch skips only the staleness-window *wait* (see

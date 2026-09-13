@@ -285,6 +285,16 @@ embedder where "another live writer" cannot exist by construction, or a test.
 Passing it elsewhere is asserting hazard 1 does not apply; Harvest cannot
 verify that for you.
 
+**A third source of a stale zero census is closed automatically (issue
+#1251), not by attestation.** The re-encryption sweep pins the key it is
+writing a batch onto, for the life of that batch. `retire_codec_key` refuses
+a pinned key even when the per-shard census reads zero — the exact state a
+batch is in right after it resolves its target and before it commits a
+single row. This is process-local and needs no operator action, unlike the
+two fleet-wide gaps above: it protects against this process's own sweep, not
+against another worker or another process's in-flight append, which are
+still invisible to it and still require the fence.
+
 ### ⚠️ Upgrade every reader before activating a keyed codec
 
 Activating a non-legacy key switches new writes to **envelope version 2** (four

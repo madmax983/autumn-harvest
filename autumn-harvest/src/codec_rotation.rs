@@ -698,6 +698,18 @@ mod db {
     /// left byte-identical, so one unreadable row cannot wedge the whole pass —
     /// and it keeps the retirement gate correctly blocked.
     ///
+    /// ## Racing retirement (issue #1251)
+    ///
+    /// The batch pins its target key
+    /// ([`PayloadCodecs::pin_key_for_sweep`]) before writing a single row.
+    /// Without the pin, a second rotation could move the active key away
+    /// from this batch's target while it still ran. `retire_codec_key`
+    /// could then drop the target on a zero census. The batch had not
+    /// committed any row under it yet, so the census looked clean.
+    /// The pin makes that retirement fail closed for as long as the batch
+    /// runs. This batch can then never commit a row under a key that
+    /// stopped being registered.
+    ///
     /// # Errors
     ///
     /// Propagates database failures. A per-row codec failure is not an error.
@@ -725,6 +737,15 @@ mod db {
         // cannot straddle a row, and the progress we file below is attributed to
         // the key we actually converted onto.
         let active_key_id = codecs.active_key_id();
+        // Pin the target for the whole batch (issue #1251). Without this, a
+        // second rotation can move `active_key_id` off this batch's target
+        // while the batch is still running. Retirement can then drop that
+        // target on a zero census, because its own rows have not committed
+        // yet. The pin makes retirement of `active_key_id` fail closed
+        // instead, for as long as this guard lives. This binds to the whole
+        // function, including every `?` early return below, by RAII rather
+        // than an explicit unpin.
+        let _target_pin = codecs.pin_key_for_sweep(&active_key_id);
         let previous = load_cursor(conn, shard_id).await?;
         // A cursor recorded against a DIFFERENT key is stale: rotating, rotating
         // again, and ROLLING BACK all mean "rescan this shard from the start".
@@ -1644,9 +1665,22 @@ mod db {
         NotConfirmed,
     }
 
-    /// The preconditions decidable *without* touching the database, split out
-    /// of [`retire_codec_key`] so the gate itself reads as validate-then-fence-
-    /// then-census.
+    /// The four preconditions decidable *without* touching the database,
+    /// split out of [`retire_codec_key`] so the gate itself reads as
+    /// validate-then-fence-then-census.
+    ///
+    /// Each check refuses one way to report a vacuous success:
+    ///
+    /// - retiring the active key;
+    /// - retiring a key an in-flight sweep batch is still writing onto;
+    /// - proving zero over no shards at all;
+    /// - proving zero for a key this process never registered.
+    ///
+    /// The pin check here is a fast-fail only — it saves the per-shard census
+    /// when the answer is already known. It is not what makes retirement
+    /// race-safe. [`PayloadCodecs::retire_key_local`] repeats the same check
+    /// under its write lock, atomically with removing the key. That repeated
+    /// check is what actually closes issue #1251's race.
     fn validate_retirement_request(
         expected_shards: &[crate::types::ShardId],
         codecs: &PayloadCodecs,
@@ -1656,6 +1690,12 @@ mod db {
             return Err(HarvestError::Config(format!(
                 "codec key id {key_id:?} is the active key and cannot be retired; \
                  activate a different key first"
+            )));
+        }
+        if codecs.is_pinned_by_sweep(key_id) {
+            return Err(HarvestError::Config(format!(
+                "codec key id {key_id:?} is pinned by an in-flight re-encryption sweep batch \
+                 and cannot be retired yet; retry once the batch completes"
             )));
         }
         if expected_shards.is_empty() {
