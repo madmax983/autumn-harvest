@@ -1,6 +1,6 @@
 //! Time-based retention janitor for completed workflow history.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 #[cfg(feature = "db")]
@@ -333,6 +333,35 @@ pub struct RetentionConfig {
     /// Audit log retention in days, independent of workflow-history retention.
     /// Defaults to 90 days (3 months). Set to 0 to disable audit purging.
     pub audit_retention_days: i64,
+    /// Protect every unexported audit row, per shard (issue #1266).
+    /// Defaults to `None` (disabled).
+    ///
+    /// `purge_old_audit_records` already refuses to delete an unexported row
+    /// in two cases. The first case: a live cursor exists for the shard. The
+    /// second case: this process has a sink configured.
+    ///
+    /// Both signals can be absent at once. This happens in a split
+    /// web/worker deployment, before the worker's first successful tick on a
+    /// shard. A fresh enablement has no tick yet. A newly added shard may
+    /// also have no tick yet, if the worker cannot reach it. A shard being
+    /// re-enabled after decommission has no tick yet either. In every one of
+    /// these, retention finds no sink and no cursor row it can trust.
+    ///
+    /// `Some(exempt)` protects every shard not in `exempt`. `None` protects
+    /// none. An empty set protects every shard.
+    ///
+    /// The exempt set exists for one reason. A fleet has more than one
+    /// shard. This flag would otherwise apply to all of them at once.
+    /// Decommissioning shard A must resume purging there. Doing that by
+    /// disabling the whole flag would also strip protection from shard B,
+    /// mid-bootstrap on the same sweep. Add A to the exempt set instead,
+    /// and B stays protected.
+    ///
+    /// Like `is_configured`, an unexempted shard's flag overrides a
+    /// retired cursor there too. Decommissioning that shard does not
+    /// resume purging while it stays unexempted. Exempt it as part of
+    /// that step. See `docs/audit-export.md`.
+    pub protect_unexported_audit: Option<BTreeSet<ShardId>>,
     /// Schedule decisions retention in days.
     /// Defaults to 7 days. Set to 0 to disable schedule decision purging.
     pub schedule_decision_retention_days: i64,
@@ -447,6 +476,7 @@ impl Default for RetentionConfig {
             batch_size: DEFAULT_BATCH_SIZE,
             dry_run: false,
             audit_retention_days: 90,
+            protect_unexported_audit: None,
             schedule_decision_retention_days: 7,
             archival_timeout_secs: DEFAULT_ARCHIVAL_TIMEOUT_SECS,
             summary: None,
@@ -499,6 +529,36 @@ impl RetentionConfig {
     pub const fn with_audit_retention_days(mut self, days: i64) -> Self {
         self.audit_retention_days = days;
         self
+    }
+
+    /// Protect every unexported audit row on this process's sweeps, closing
+    /// the split-deployment bootstrap window (issue #1266). Set `true` on
+    /// every process in a split web/worker deployment.
+    #[must_use]
+    pub fn with_protect_unexported_audit(mut self, protect: bool) -> Self {
+        self.protect_unexported_audit = if protect { Some(BTreeSet::new()) } else { None };
+        self
+    }
+
+    /// Exempt one shard from `protect_unexported_audit` (issue #1266). Call
+    /// this for a shard being decommissioned, so its purge can resume
+    /// without also unprotecting every other shard in the fleet.
+    #[must_use]
+    pub fn excluding_shard_from_protect_unexported_audit(mut self, shard: ShardId) -> Self {
+        if let Some(exempt) = &mut self.protect_unexported_audit {
+            exempt.insert(shard);
+        }
+        self
+    }
+
+    /// Whether `protect_unexported_audit` covers this shard (issue #1266).
+    /// `true` only when protection is enabled and the shard is not
+    /// exempted.
+    #[must_use]
+    pub fn protects_unexported_audit(&self, shard: ShardId) -> bool {
+        self.protect_unexported_audit
+            .as_ref()
+            .is_some_and(|exempt| !exempt.contains(&shard))
     }
 
     /// Override the schedule decision retention window.
@@ -1276,17 +1336,7 @@ impl RetentionRuntime {
                 // Audit rows may live on any shard (workflow starts use shard-aware
                 // inserts), so iterate every shard to honour the retention window.
                 if config.audit_retention_days > 0 && !config.dry_run {
-                    for (_, pool) in pools.iter_shards() {
-                        if let Ok(mut conn) = pool.get().await
-                            && let Err(err) = crate::audit::purge_old_audit_records(
-                                &mut conn,
-                                config.audit_retention_days,
-                            )
-                            .await
-                        {
-                            tracing::warn!(error = %err, "harvest audit log purge failed");
-                        }
-                    }
+                    purge_audit_records_across_shards(&pools, &config).await;
                 }
 
                 // Purge old schedule decisions once per tick, best-effort.
@@ -1592,6 +1642,94 @@ impl Drop for RetentionLeaseGuard {
                         .await;
                     }
                 });
+            }
+        }
+    }
+}
+
+/// Compute each pool group's combined `protect_unexported_audit` decision
+/// (issue #1266).
+///
+/// Two logical shards may share one physical pool. See
+/// `ShardedDbPool::pool_groups` for how that is detected.
+///
+/// `purge_old_audit_records` issues one unscoped `DELETE` per call. It
+/// relies on the connection alone to identify which shard it purges.
+/// Calling it once per logical shard would let two aliased shards apply
+/// two different `protect_unexported_audit` decisions to one physical
+/// audit table, within one tick. A less protective decision would commit
+/// before a more protective one ever ran.
+///
+/// Combining each group's decision with `any` avoids that. The combined
+/// decision is `true` when any aliased shard wants protection. Each
+/// physical pool is purged once per tick with that one decision, already
+/// accounting for every shard sharing it.
+///
+/// A list of shard ids travels with the decision for the same reason
+/// (issue #1266). `purge_old_audit_records`'s pending check needs to
+/// know which colocated shards should each have a cursor row, not only
+/// whether the combined protection flag is set. A cursor-row count is
+/// not enough. A decommissioned shard's row is retired, never deleted,
+/// so a count can look complete even when a currently colocated shard
+/// has none of its own. See `purge_old_audit_records`'s doc comment.
+///
+/// The list excludes only shards an operator has explicitly exempted,
+/// not every shard that merely lacks today's `protect_unexported_audit`
+/// flag. Those are different things. The flag can be unset for every
+/// shard (`protect_unexported_audit: None`, the common case). That means
+/// the operator never opted into it at all. Every shard's cursor still
+/// matters exactly as it did before this flag existed.
+/// [`RetentionConfig::protects_unexported_audit`] answers a different
+/// question -- "does the flag protect this shard right now". It returns
+/// `false` for every shard when the flag is off. Using it here would
+/// silently empty this list and disable the check across the board. An
+/// explicitly exempted shard (issue #1266) may never tick, and so may
+/// have no cursor row at all. It is not a shard the guard needs to hear
+/// from: exempting it is exactly how an operator says its progress no
+/// longer matters. Naming it anyway would make the missing-cursor check
+/// permanently true. That blocks purges of rows a still-protected shard
+/// has genuinely already acknowledged, defeating the exemption's purpose.
+#[cfg(feature = "db")]
+fn group_shards_by_pool<'a>(
+    pools: &'a ShardedDbPool,
+    config: &RetentionConfig,
+) -> Vec<(&'a crate::worker::DbPool, bool, Vec<ShardId>)> {
+    pools
+        .pool_groups()
+        .into_iter()
+        .map(|(pool, shards)| {
+            let protect = shards
+                .iter()
+                .any(|shard| config.protects_unexported_audit(*shard));
+            let expects_cursor: Vec<ShardId> = shards
+                .into_iter()
+                .filter(|shard| {
+                    !config
+                        .protect_unexported_audit
+                        .as_ref()
+                        .is_some_and(|exempt| exempt.contains(shard))
+                })
+                .collect();
+            (pool, protect, expects_cursor)
+        })
+        .collect()
+}
+
+#[cfg(feature = "db")]
+async fn purge_audit_records_across_shards(pools: &ShardedDbPool, config: &RetentionConfig) {
+    for (pool, protect_unexported_audit, colocated_shards) in group_shards_by_pool(pools, config) {
+        if let Ok(mut conn) = pool.get().await {
+            let colocated_shard_ids: Vec<i32> =
+                colocated_shards.iter().map(|s| s.as_i32()).collect();
+            if let Err(err) = crate::audit::purge_old_audit_records(
+                &mut conn,
+                config.audit_retention_days,
+                protect_unexported_audit,
+                &colocated_shard_ids,
+            )
+            .await
+            {
+                tracing::warn!(error = %err, "harvest audit log purge failed");
             }
         }
     }
@@ -3170,6 +3308,205 @@ mod tests {
             ..Default::default()
         };
         assert!(config.validate().is_err());
+    }
+
+    // --- Issue #1266: per-shard protect_unexported_audit exemption ---
+
+    #[test]
+    fn protect_unexported_audit_disabled_by_default() {
+        let config = RetentionConfig::default();
+        assert!(!config.protects_unexported_audit(ShardId::new(0)));
+        assert!(!config.protects_unexported_audit(ShardId::new(1)));
+    }
+
+    #[test]
+    fn protect_unexported_audit_true_covers_every_shard() {
+        let config = RetentionConfig::default().with_protect_unexported_audit(true);
+        assert!(config.protects_unexported_audit(ShardId::new(0)));
+        assert!(config.protects_unexported_audit(ShardId::new(1)));
+    }
+
+    // A fleet decommissioning shard 0 must not lose bootstrap protection
+    // for shard 1, still mid-bootstrap on the same sweep. One process-wide
+    // boolean cannot represent both states at once, which is why the
+    // exemption exists.
+    #[test]
+    fn excluding_a_shard_leaves_every_other_shard_protected() {
+        let config = RetentionConfig::default()
+            .with_protect_unexported_audit(true)
+            .excluding_shard_from_protect_unexported_audit(ShardId::new(0));
+        assert!(
+            !config.protects_unexported_audit(ShardId::new(0)),
+            "the exempted shard must be free to resume purging"
+        );
+        assert!(
+            config.protects_unexported_audit(ShardId::new(1)),
+            "a different shard must stay protected"
+        );
+    }
+
+    #[test]
+    fn excluding_a_shard_while_disabled_changes_nothing() {
+        let config = RetentionConfig::default()
+            .excluding_shard_from_protect_unexported_audit(ShardId::new(0));
+        assert!(!config.protects_unexported_audit(ShardId::new(0)));
+        assert!(!config.protects_unexported_audit(ShardId::new(1)));
+    }
+
+    // Two logical shards may alias one physical pool (a supported pre-split
+    // staging topology). Building a `Pool` never connects, so this needs no
+    // live database.
+    #[cfg(feature = "db")]
+    fn test_pool(url: &str) -> crate::worker::DbPool {
+        let manager = diesel_async::pooled_connection::AsyncDieselConnectionManager::<
+            diesel_async::AsyncPgConnection,
+        >::new(url);
+        crate::worker::DbPool::builder(manager)
+            .max_size(1)
+            .build()
+            .expect("pool builds without connecting")
+    }
+
+    // A shard exempted for decommission must not drag its physical-pool
+    // alias down with it. One aliased shard still wants protection, so the
+    // whole shared pool must stay protected (issue #1266).
+    #[cfg(feature = "db")]
+    #[test]
+    fn group_shards_by_pool_combines_aliased_shards_conservatively() {
+        let pool = test_pool("postgres://unused/db");
+        let mut aliased = BTreeMap::new();
+        aliased.insert(ShardId::new(0), pool.clone());
+        aliased.insert(ShardId::new(1), pool);
+        let sharded = ShardedDbPool::from_map(aliased, ShardId::new(0));
+
+        let config = RetentionConfig::default()
+            .with_protect_unexported_audit(true)
+            .excluding_shard_from_protect_unexported_audit(ShardId::new(0));
+
+        let groups = group_shards_by_pool(&sharded, &config);
+        assert_eq!(
+            groups.len(),
+            1,
+            "both shards alias one pool, so they must collapse to one group"
+        );
+        assert!(
+            groups[0].1,
+            "shard 1 still wants protection, so the shared pool stays protected"
+        );
+        assert_eq!(
+            groups[0].2,
+            vec![ShardId::new(1)],
+            "only shard 1 wants protection, so only it belongs in the \
+             expected-cursor list; exempted shard 0 must not appear \
+             there even though it shares the pool"
+        );
+    }
+
+    // Two shards on genuinely separate pools must never be combined. Shard
+    // 0's exemption must stay local to its own pool (issue #1266).
+    #[cfg(feature = "db")]
+    #[test]
+    fn group_shards_by_pool_keeps_distinct_pools_separate() {
+        let pool_a = test_pool("postgres://unused/db-a");
+        let pool_b = test_pool("postgres://unused/db-b");
+        let mut distinct = BTreeMap::new();
+        distinct.insert(ShardId::new(0), pool_a);
+        distinct.insert(ShardId::new(1), pool_b);
+        let sharded = ShardedDbPool::from_map(distinct, ShardId::new(0));
+
+        let config = RetentionConfig::default()
+            .with_protect_unexported_audit(true)
+            .excluding_shard_from_protect_unexported_audit(ShardId::new(0));
+
+        let groups = group_shards_by_pool(&sharded, &config);
+        assert_eq!(
+            groups.len(),
+            2,
+            "two distinct pools must never collapse into one group"
+        );
+        let protections: Vec<bool> = groups.iter().map(|(_, protect, _)| *protect).collect();
+        assert!(
+            protections.contains(&false) && protections.contains(&true),
+            "shard 0's exemption must not leak into shard 1's own, separate pool"
+        );
+        for (_, protect, shards) in &groups {
+            if *protect {
+                assert_eq!(
+                    *shards,
+                    vec![ShardId::new(1)],
+                    "shard 1's own pool expects a cursor from shard 1"
+                );
+            } else {
+                assert!(
+                    shards.is_empty(),
+                    "exempted shard 0's own pool expects no cursor at all"
+                );
+            }
+        }
+    }
+
+    // An exempted shard that never ticks must not permanently block
+    // purging on a colocated shard that has (issue #1266). Naming an
+    // exempted shard in the expected-cursor list would make the
+    // missing-cursor check true forever, defeating the exemption.
+    #[cfg(feature = "db")]
+    #[test]
+    fn group_shards_by_pool_excludes_an_exempted_shard_from_the_expected_cursor_list() {
+        let pool = test_pool("postgres://unused/db");
+        let mut aliased = BTreeMap::new();
+        aliased.insert(ShardId::new(0), pool.clone());
+        aliased.insert(ShardId::new(1), pool);
+        let sharded = ShardedDbPool::from_map(aliased, ShardId::new(0));
+
+        // Shard 0 is exempted -- an unreachable shard whose export was
+        // abandoned, never ticked, never decommissioned. Shard 1 still
+        // wants protection.
+        let config = RetentionConfig::default()
+            .with_protect_unexported_audit(true)
+            .excluding_shard_from_protect_unexported_audit(ShardId::new(0));
+
+        let groups = group_shards_by_pool(&sharded, &config);
+        assert_eq!(
+            groups[0].2,
+            vec![ShardId::new(1)],
+            "shard 0's exemption must remove it from the expected-cursor \
+             list entirely, not merely from the protection decision, or \
+             its permanent lack of a cursor row would block purging of \
+             rows shard 1 has genuinely acknowledged"
+        );
+    }
+
+    // Leaving `protect_unexported_audit` unset entirely (the common
+    // case, issue #1266) must not empty the expected-cursor list.
+    // `protects_unexported_audit` answers "does the flag protect this
+    // shard today". That is `false` for every shard when the flag is
+    // off. It is a different question from "is this shard exempted",
+    // which is what the expected-cursor list must filter on. Confusing
+    // the two would silently disable the missing-cursor check for every
+    // deployment that never configures this flag at all.
+    #[cfg(feature = "db")]
+    #[test]
+    fn group_shards_by_pool_expects_every_shard_when_the_flag_is_never_configured() {
+        let pool = test_pool("postgres://unused/db");
+        let mut aliased = BTreeMap::new();
+        aliased.insert(ShardId::new(0), pool.clone());
+        aliased.insert(ShardId::new(1), pool);
+        let sharded = ShardedDbPool::from_map(aliased, ShardId::new(0));
+
+        let config = RetentionConfig::default();
+        assert!(
+            !config.protects_unexported_audit(ShardId::new(0)),
+            "the flag protects nobody when it is off, by design"
+        );
+
+        let groups = group_shards_by_pool(&sharded, &config);
+        assert_eq!(
+            groups[0].2,
+            vec![ShardId::new(0), ShardId::new(1)],
+            "an unconfigured flag exempts no one, so both colocated \
+             shards must still be expected to have a cursor row, exactly \
+             as they were before this flag existed"
+        );
     }
 
     // --- Issue #737: per-workflow-type history retention overrides ---

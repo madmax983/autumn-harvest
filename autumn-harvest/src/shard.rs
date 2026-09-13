@@ -910,6 +910,493 @@ fn rendezvous_hash(shard: ShardId, primary: &str, secondary: &str) -> u64 {
 pub struct ShardedDbPool {
     pools: BTreeMap<ShardId, DbPool>,
     default_shard: ShardId,
+    /// Which shards share one physical pool (issue #1266). Shards with the
+    /// same group number are the same physical database. A group number
+    /// is otherwise opaque. It has no meaning across two `ShardedDbPool`
+    /// instances. See `pool_groups`.
+    pool_group: BTreeMap<ShardId, u32>,
+}
+
+/// Group shards by underlying pool identity (issue #1266).
+///
+/// Two `Pool` values are the same physical pool exactly when they are
+/// clones of one `Arc`. `Pool::manager()` returns a reference into that
+/// shared allocation, so `ptr::eq` on it detects aliasing safely, with no
+/// private field or unsafe code.
+///
+/// This is the right signal for `from_map`, whose caller may hand in
+/// clones of one pool under two shard ids. It cannot see through two
+/// independently built pools that merely share a connection string.
+/// `from_dsns` computes its own grouping for that case instead, with
+/// [`canonical_dsn_key`], before the DSNs are ever built into a pool.
+#[cfg(feature = "db")]
+fn group_by_pool_identity(pools: &BTreeMap<ShardId, DbPool>) -> BTreeMap<ShardId, u32> {
+    let mut representatives: Vec<&DbPool> = Vec::new();
+    let mut groups = BTreeMap::new();
+    for (shard, pool) in pools {
+        let group = representatives
+            .iter()
+            .position(|existing| std::ptr::eq(existing.manager(), pool.manager()))
+            .unwrap_or_else(|| {
+                representatives.push(pool);
+                representatives.len() - 1
+            });
+        groups.insert(*shard, u32::try_from(group).unwrap_or(u32::MAX));
+    }
+    groups
+}
+
+/// Canonical grouping key for a DSN (issue #1266).
+///
+/// Two DSNs can reach the same physical database while written
+/// differently. Credentials can differ, a port can be explicit or
+/// default, or a connection-tuning parameter such as `application_name`
+/// or `sslmode` can differ. Comparing the raw strings would treat these
+/// as separate databases. Each apparent group would then apply its own
+/// protection decision to rows the other group was meant to protect.
+///
+/// Parsed with **`tokio_postgres::Config`**, the exact parser
+/// `diesel_async` hands the DSN to at connect time. This is the same
+/// choice `backup_verify.rs`'s `parse_dsn_identity` makes, for the same
+/// reason. `url::Url` disagrees with it on percent-decoding
+/// (`/%68arvest` is database `harvest`). It also disagrees on
+/// `?dbname=`/`?host=`/`?port=`/`?hostaddr=` overrides, and on
+/// comma-separated multi-host DSNs. Every one of those parses cleanly
+/// under `url`. Each resolves somewhere else entirely at connect time.
+/// A key built on `url` cannot see two spellings of one database as the
+/// same pool.
+///
+/// The key keeps host and `hostaddr` (a numeric `host` counts as an
+/// address, needing no DNS to compare). It prefers `hostaddr` over
+/// `host` whenever `hostaddr` is given at all, since `hostaddr` pins
+/// the actual TCP destination. Two DSNs sharing one stay one pool
+/// however differently each spells the hostname. The key also keeps
+/// port (defaulted to 5432 when absent) and the database name. It keeps
+/// only a `search_path` setting extracted from the `options` parameter
+/// — see [`extract_search_path`]. `options` is libpq's escape hatch for
+/// arbitrary session settings, and `search_path` is the one setting it
+/// can carry that picks the schema `harvest_audit_log` resolves to. Two
+/// DSNs that differ only there can still reach different data and must
+/// never be grouped as one pool. Every other query parameter is
+/// dropped. So is every other `options` flag, such as
+/// `application_name` or `client_min_messages`. None of it changes
+/// which relation a query resolves against.
+///
+/// A DNS hostname is lowercased, since it is case-insensitive. A
+/// Unix-socket path is kept as written instead, since a filesystem path
+/// is not: `/run/PG-A` and `/run/pg-a` name different sockets.
+///
+/// A DSN with no path names no database. That is not the same as
+/// naming none: libpq defaults an omitted `dbname` to the connecting
+/// username. The key uses the username in that case, and only in that
+/// case. The rest of this comment's reasoning against using the
+/// username still holds whenever a path is present.
+///
+/// Four gaps are accepted rather than chased further:
+/// - A host alias — two hostnames that resolve to one address — is not
+///   detected. Closing it needs a live connection, and building a pool
+///   must stay a pure, local operation with no network access.
+/// - A role's own `search_path`, set server-side with `ALTER ROLE ...
+///   SET search_path`, is invisible in the DSN. The username is dropped
+///   with the rest of the credentials, not kept as a proxy for it. Two
+///   DSNs for one database under different usernames are a supported
+///   topology (`from_dsns`'s own `harvest shard rebalance` use, issue
+///   #964). Treating them as different pools would reopen the exact bug
+///   this key exists to close.
+/// - A multi-host DSN's hosts and ports are each sorted and deduplicated
+///   independently, not paired positionally. `host=a,b port=5432,6432`
+///   and `host=a,b port=6432,5432` can name different endpoint pairs,
+///   yet compare equal. `from_dsns` is built for its one documented use
+///   — one host per shard entry (`harvest shard rebalance`, issue #964)
+///   — where this never arises. Unlike the other two gaps, getting this
+///   wrong over-merges rather than under-merges. The failure is a
+///   skipped purge on one endpoint, not a premature delete. It is left
+///   for whoever first needs multi-host `from_dsns` entries to fix
+///   alongside a real use case to test it against.
+/// - Two different `search_path` orders can still resolve one unqualified
+///   relation to the identical schema. This happens when the
+///   earlier-searched schemas in one order do not contain that relation
+///   at all. `tenant_a,public` and `tenant_b,public` both resolve
+///   `harvest_audit_log` from `public`, whenever neither tenant schema
+///   defines its own copy of that table. Unlike the other three gaps,
+///   this one is not conservative. Two aliases of one physical table can
+///   compare as distinct pools. That is the same under-merging risk this
+///   key exists to close elsewhere. Detecting it needs to know what each
+///   named schema actually contains. That is a live catalog lookup, not
+///   a fact this key can read from the DSN text. It is out of reach for
+///   the same reason as the host alias gap above. Building a pool must
+///   stay a pure, local operation with no network access. It is left
+///   undetected rather than guessed at without a connection.
+///
+/// A DSN that does not parse falls back to the raw string, unchanged
+/// from before this key existed.
+#[cfg(feature = "db")]
+fn canonical_dsn_key(dsn: &str) -> String {
+    use std::str::FromStr as _;
+
+    let Ok(config) = tokio_postgres::Config::from_str(dsn.trim()) else {
+        return dsn.to_string();
+    };
+
+    let mut hostaddrs: Vec<String> = config
+        .get_hostaddrs()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let explicit_hostaddr = !hostaddrs.is_empty();
+    let mut hosts: Vec<String> = Vec::new();
+    for h in config.get_hosts() {
+        match h {
+            // A numeric `host` is skipped outright once `hostaddr` is
+            // explicit (issue #1266). `hostaddr` alone pins the TCP
+            // destination then. `host` text -- numeric or not -- only
+            // affects authentication, never which server is reached.
+            // Folding a numeric `host` into `hostaddrs` regardless made
+            // `host=10.0.0.1&hostaddr=10.0.0.2` key differently from
+            // `host=alias&hostaddr=10.0.0.2`, even though both pin the
+            // identical destination.
+            tokio_postgres::config::Host::Tcp(_) if explicit_hostaddr => {}
+            tokio_postgres::config::Host::Tcp(name) => {
+                if let Ok(addr) = std::net::IpAddr::from_str(name) {
+                    hostaddrs.push(addr.to_string());
+                } else {
+                    hosts.push(name.to_ascii_lowercase());
+                }
+            }
+            #[cfg(unix)]
+            tokio_postgres::config::Host::Unix(path) => {
+                hosts.push(path.to_string_lossy().into_owned());
+            }
+        }
+    }
+    hosts.sort_unstable();
+    hosts.dedup();
+    hostaddrs.sort_unstable();
+    hostaddrs.dedup();
+    // `hostaddr` pins the actual TCP destination, so it wins over `host`
+    // text. `backup_verify.rs`'s `parse_dsn_identity` treats it the same
+    // way. Two DSNs sharing an address are one pool however differently
+    // each spells the hostname. `host` matters only when neither side
+    // pins an address.
+    let location = if hostaddrs.is_empty() {
+        &hosts
+    } else {
+        &hostaddrs
+    };
+
+    let mut ports: Vec<u16> = config.get_ports().to_vec();
+    if ports.is_empty() {
+        ports.push(5432);
+    }
+    ports.sort_unstable();
+    ports.dedup();
+
+    let db = config.get_dbname().or_else(|| config.get_user());
+    let search_path = extract_search_path(config.get_options().unwrap_or_default());
+
+    format!("{location:?}{ports:?}/{db:?}?search_path={search_path:?}")
+}
+
+/// Pulls only `search_path` settings out of a libpq `options` string,
+/// discarding every other `-c name=value` flag it may carry (issue
+/// #1266). `options` is a general escape hatch. An operator can set
+/// `application_name`, `client_min_messages`, or anything else through
+/// it just as easily as `search_path`. None of those change which
+/// relation a query resolves against. Keeping the whole string verbatim
+/// reopened the same bug this key exists to close. Two DSNs for the
+/// same pool, differing only in an unrelated `-c` flag, no longer
+/// merged.
+///
+/// This recognizes three shapes. One is whitespace-separated tokens
+/// where a `-c` token is immediately followed by a `search_path=value`
+/// token. The other two are one-token spellings: the compact
+/// `-csearch_path=value`, and the long-form `--search_path=value`.
+/// `PostgreSQL`'s own server documentation names the long form as an
+/// alternate spelling for any run-time parameter. The GUC name itself
+/// is matched case-insensitively in all three shapes (issue #1266).
+/// `PostgreSQL` parameter names are case-insensitive, so
+/// `SEARCH_PATH=shared` sets the identical GUC as `search_path=shared`.
+/// The long form also normalizes a hyphen to an underscore in the name
+/// before matching. `PostgreSQL` does the same when mapping a
+/// `--long-option` to its GUC, so `--search-path=shared` sets the
+/// identical GUC as `--search_path=shared`. A quoted value with
+/// embedded spaces is not recognized. Treating an
+/// unparsed `options` string as carrying no `search_path` is the
+/// conservative direction here. It only widens which DSNs compare as
+/// different, never the reverse.
+///
+/// Splitting honors libpq's own escaping rule for `options` (issue
+/// #1266). A backslash before a space embeds a literal space in the
+/// current argument rather than ending it. `\\` embeds a literal
+/// backslash. Splitting on bare whitespace instead can truncate a value
+/// at an escaped space. A truncated value can then differ from an
+/// alias's untruncated one even when both name the same effective
+/// schema. That is exactly the false difference this key must not
+/// create, since it stops two aliases of one physical pool from being
+/// combined.
+///
+/// The extracted value is then normalized the way `PostgreSQL` itself
+/// parses a schema list (`SplitIdentifierString`): comma-separated,
+/// with insignificant whitespace around each name. An unquoted name is
+/// folded to lowercase, since `PostgreSQL` folds unquoted identifiers
+/// the same way. A double-quoted name keeps its case. It can also
+/// contain a comma or space that is not a separator. `""` inside one is
+/// a literal quote character. `tenant,public` and `tenant, public` name
+/// the same search path and must compare equal. `"tenant, one"` (one
+/// quoted name) must never compare equal to `tenant,one` (two unquoted
+/// names). Full `PostgreSQL` locale-dependent case folding is not
+/// chased here; ASCII/Unicode lowercasing is the accepted
+/// approximation, alongside the other documented gaps below.
+///
+/// `options` can repeat `-c search_path=...` more than once. libpq
+/// applies each as a `SET` in order at session start, so only the last
+/// one takes effect. Returning every match found would keep an
+/// overridden, inert value in the key, splitting two DSNs whose
+/// sessions actually resolve to the same schema. This keeps overwriting
+/// as it scans, so the last match wins, matching what the server does.
+#[cfg(feature = "db")]
+fn extract_search_path(options: &str) -> Option<String> {
+    let mut tokens = split_options_preserving_escapes(options).into_iter();
+    let mut search_path = None;
+    while let Some(tok) = tokens.next() {
+        let value: Option<String> = if tok == "-c" {
+            tokens
+                .next()
+                .and_then(|kv| strip_search_path_name(&kv).map(str::to_string))
+        } else if let Some(rest) = tok.strip_prefix("-c") {
+            strip_search_path_name(rest).map(str::to_string)
+        } else if let Some(rest) = tok.strip_prefix("--") {
+            strip_search_path_name_long_form(rest).map(str::to_string)
+        } else {
+            None
+        };
+        if let Some(value) = value {
+            search_path = Some(normalize_search_path(&value));
+        }
+    }
+    search_path
+}
+
+/// Splits a `name=value` token and returns `value` only when `name`
+/// case-insensitively equals `search_path` (issue #1266). `PostgreSQL`
+/// parameter names are case-insensitive, so `SEARCH_PATH=shared` sets
+/// the identical GUC as `search_path=shared` and must extract the same
+/// way.
+#[cfg(feature = "db")]
+fn strip_search_path_name(token: &str) -> Option<&str> {
+    let (name, value) = token.split_once('=')?;
+    name.eq_ignore_ascii_case("search_path").then_some(value)
+}
+
+/// Splits a long-form `--name=value` token and returns `value` only
+/// when `name` names `search_path` (issue #1266). `PostgreSQL`
+/// normalizes a hyphen to an underscore in a long-form GUC name before
+/// matching it, so `--search-path=shared` sets the identical GUC as
+/// `--search_path=shared`. The owned, hyphen-normalized name cannot
+/// reuse `strip_search_path_name`'s borrow of the original token.
+#[cfg(feature = "db")]
+fn strip_search_path_name_long_form(token: &str) -> Option<&str> {
+    let (name, value) = token.split_once('=')?;
+    name.replace('-', "_")
+        .eq_ignore_ascii_case("search_path")
+        .then_some(value)
+}
+
+/// Splits a libpq `options` string into arguments, honoring its
+/// documented escaping (issue #1266). A backslash before any
+/// whitespace character embeds that character literally in the
+/// current argument instead of ending it there. `PostgreSQL`'s own
+/// splitter (`pg_split_opts`) tests with `isspace()`, not specifically
+/// a space, so a tab or other whitespace escapes the same way. A
+/// backslash before any other character consumes the backslash too
+/// (issue #1266). `pg_split_opts` removes it unconditionally, so
+/// `public\,public` reaches the server the same as `public,public` --
+/// the backslash never survives to `SplitIdentifierString`. Keeping it
+/// here would compare two equivalent values as different.
+/// A trailing backslash with nothing after it has nothing to escape,
+/// so it is kept literally. Naive whitespace splitting would end an
+/// argument at an escaped whitespace character, corrupting any value
+/// that contains one.
+#[cfg(feature = "db")]
+fn split_options_preserving_escapes(options: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut has_token = false;
+    let mut chars = options.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && chars.peek().is_some() {
+            current.push(chars.next().expect("peeked Some above"));
+            has_token = true;
+        } else if c.is_whitespace() {
+            if has_token {
+                tokens.push(std::mem::take(&mut current));
+                has_token = false;
+            }
+        } else {
+            current.push(c);
+            has_token = true;
+        }
+    }
+    if has_token {
+        tokens.push(current);
+    }
+    tokens
+}
+
+/// Normalizes a `search_path` value by parsing it as a `PostgreSQL`
+/// identifier list and rejoining the result (issue #1266). Falls back
+/// to the value unchanged when it does not parse. A malformed value
+/// cannot be normalized, so it is kept distinguishable from every other
+/// value rather than guessed at. This is the same conservative choice
+/// made elsewhere in this key.
+///
+/// Each item is escaped before rejoining, backslash-quoting its own
+/// backslashes and commas (issue #1266). Joining with a bare `,` would
+/// let a quoted item's own embedded comma read back as an item
+/// boundary. The one item `tenant,one` and the two items `tenant` and
+/// `one` would then both join to the same string `tenant,one` -- a
+/// real collision. Escaping first keeps every item's boundary in the
+/// joined key, so the two cases above never compare equal.
+///
+/// `pg_catalog` is inserted at the front when the parsed list omits it
+/// (issue #1266). `PostgreSQL` always searches `pg_catalog` first when
+/// it is not named explicitly. `public` and `pg_catalog,public`
+/// therefore resolve an unqualified relation the same way, and must
+/// key the same. A list that already names `pg_catalog` anywhere is
+/// left as-is. Its explicit position then decides the resolution
+/// order, and an explicit, non-leading position is a genuinely
+/// different order from the implicit one.
+///
+/// `pg_temp` is inserted the same way, but at the very front (issue
+/// #1266). `PostgreSQL` searches the session's temporary-object schema
+/// before `pg_catalog` too, unless `pg_temp` is named explicitly. The
+/// two implicit insertions are independent, so `pg_temp` is applied
+/// after `pg_catalog`'s, landing ahead of it exactly when both were
+/// omitted.
+///
+/// A repeated name is then dropped, keeping only its first occurrence
+/// (issue #1266). `public` and `public,public` search the identical
+/// schema in the identical order. A later repeat of a name already
+/// searched changes nothing about where a relation resolves, so they
+/// must key the same too.
+#[cfg(feature = "db")]
+fn normalize_search_path(value: &str) -> String {
+    parse_identifier_list(value).map_or_else(
+        || value.to_string(),
+        |mut items| {
+            if !items.iter().any(|item| item == "pg_catalog") {
+                items.insert(0, "pg_catalog".to_string());
+            }
+            if !items.iter().any(|item| item == "pg_temp") {
+                items.insert(0, "pg_temp".to_string());
+            }
+            let mut seen = std::collections::HashSet::new();
+            items.retain(|item| seen.insert(item.clone()));
+            items
+                .iter()
+                .map(|item| escape_identifier_list_item(item))
+                .collect::<Vec<_>>()
+                .join(",")
+        },
+    )
+}
+
+/// Backslash-escapes a parsed identifier-list item's own backslashes
+/// and commas (issue #1266). Joining escaped items with a bare `,`
+/// then keeps every item boundary recoverable in the joined string.
+#[cfg(feature = "db")]
+fn escape_identifier_list_item(item: &str) -> String {
+    let mut escaped = String::with_capacity(item.len());
+    for c in item.chars() {
+        if c == '\\' || c == ',' {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
+}
+
+/// The longest identifier `PostgreSQL` stores without truncating it
+/// (issue #1266). `NAMEDATALEN` is 64, and one byte is reserved for
+/// the terminator. A name longer than this is silently truncated to
+/// it. `SplitIdentifierString` truncates each `search_path` entry the
+/// same way. Two names differing only after this many bytes truncate
+/// to the identical stored name and must key the same.
+#[cfg(feature = "db")]
+const POSTGRES_MAX_IDENTIFIER_LEN: usize = 63;
+
+/// Truncates `name` to `PostgreSQL`'s identifier length limit (issue
+/// #1266). This cuts at the last full character rather than splitting
+/// a multi-byte one, matching `PostgreSQL`'s own byte-based truncation.
+#[cfg(feature = "db")]
+fn truncate_postgres_identifier(name: &str) -> &str {
+    if name.len() <= POSTGRES_MAX_IDENTIFIER_LEN {
+        return name;
+    }
+    let mut end = POSTGRES_MAX_IDENTIFIER_LEN;
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    &name[..end]
+}
+
+/// Parses a comma-separated identifier list the way `PostgreSQL`'s own
+/// `SplitIdentifierString` does (issue #1266), used for `search_path`
+/// and similar GUCs. Whitespace around an item is not significant. An
+/// unquoted item is folded to lowercase, matching `PostgreSQL`'s own
+/// folding of an unquoted identifier. A double-quoted item keeps its
+/// case verbatim, including any comma or whitespace it encloses; `""`
+/// inside one is a literal quote character. Either form is then
+/// truncated to `PostgreSQL`'s identifier length limit, matching what
+/// `SplitIdentifierString` itself does. Returns `None` on anything
+/// that does not fit this grammar, rather than guessing at a malformed
+/// value. An unterminated quote is one such case. Content trailing a
+/// closing quote before the next comma is another.
+#[cfg(feature = "db")]
+fn parse_identifier_list(value: &str) -> Option<Vec<String>> {
+    let mut items = Vec::new();
+    let mut chars = value.chars().peekable();
+    loop {
+        while chars.next_if(|c| c.is_whitespace()).is_some() {}
+        match chars.peek() {
+            None => break,
+            Some('"') => {
+                chars.next();
+                let mut ident = String::new();
+                loop {
+                    match chars.next() {
+                        None => return None,
+                        Some('"') if chars.peek() == Some(&'"') => {
+                            ident.push('"');
+                            chars.next();
+                        }
+                        Some('"') => break,
+                        Some(c) => ident.push(c),
+                    }
+                }
+                items.push(truncate_postgres_identifier(&ident).to_string());
+            }
+            Some(_) => {
+                let mut ident = String::new();
+                while let Some(&c) = chars.peek() {
+                    if c == ',' || c.is_whitespace() {
+                        break;
+                    }
+                    ident.push(c);
+                    chars.next();
+                }
+                let folded = ident.to_lowercase();
+                items.push(truncate_postgres_identifier(&folded).to_string());
+            }
+        }
+        while chars.next_if(|c| c.is_whitespace()).is_some() {}
+        match chars.next() {
+            None => break,
+            Some(',') => {}
+            Some(_) => return None,
+        }
+    }
+    Some(items)
 }
 
 #[cfg(feature = "db")]
@@ -918,6 +1405,7 @@ impl std::fmt::Debug for ShardedDbPool {
         f.debug_struct("ShardedDbPool")
             .field("shards", &self.pools.keys())
             .field("default_shard", &self.default_shard)
+            .field("pool_group", &self.pool_group)
             .finish()
     }
 }
@@ -976,6 +1464,7 @@ impl ShardedDbPool {
         let this = Self {
             pools,
             default_shard: shard,
+            pool_group: BTreeMap::from([(shard, 0)]),
         };
         if let Ok(mut lock) = GLOBAL_SHARDED_POOL.write() {
             *lock = Some(this.clone());
@@ -998,14 +1487,46 @@ impl ShardedDbPool {
             pools.contains_key(&default_shard),
             "default_shard {default_shard} has no configured pool"
         );
+        let pool_group = group_by_pool_identity(&pools);
         let this = Self {
             pools,
             default_shard,
+            pool_group,
         };
         if let Ok(mut lock) = GLOBAL_SHARDED_POOL.write() {
             *lock = Some(this.clone());
         }
         this
+    }
+
+    /// Every shard, grouped by underlying physical pool (issue #1266).
+    ///
+    /// `from_map` detects a shared pool by object identity — aliased
+    /// clones, the shape a pre-split staging deployment uses. `from_dsns`
+    /// builds a fresh pool per entry, even for two DSNs that reach one
+    /// physical database. It detects the alias from a canonical form of
+    /// each connection string instead.
+    ///
+    /// # Panics
+    ///
+    /// Never, in practice. Every constructor keeps `pool_group` naming
+    /// exactly the shards present in `pools`.
+    #[must_use]
+    pub fn pool_groups(&self) -> Vec<(&DbPool, Vec<ShardId>)> {
+        let mut by_group: BTreeMap<u32, Vec<ShardId>> = BTreeMap::new();
+        for (shard, group) in &self.pool_group {
+            by_group.entry(*group).or_default().push(*shard);
+        }
+        by_group
+            .into_values()
+            .map(|shards| {
+                let pool = self
+                    .pools
+                    .get(&shards[0])
+                    .expect("pool_group only names shards with a pool");
+                (pool, shards)
+            })
+            .collect()
     }
 
     /// The default shard used when an `ExecutionId` carries the unencoded
@@ -1115,7 +1636,24 @@ impl ShardedDbPool {
         max_size: usize,
     ) -> crate::error::HarvestResult<Self> {
         let mut pools = BTreeMap::new();
+        // A fresh `Pool` is built per entry here, even for two DSNs that
+        // reach one physical database (issue #1266).
+        // `group_by_pool_identity` could never see through that, so
+        // `canonical_dsn_key` is the grouping key, compared before the
+        // DSN is consumed into a manager.
+        let mut seen_keys: Vec<String> = Vec::new();
+        let mut pool_group = BTreeMap::new();
         for (shard, dsn) in entries {
+            let key = canonical_dsn_key(&dsn);
+            let group = seen_keys
+                .iter()
+                .position(|seen| *seen == key)
+                .unwrap_or_else(|| {
+                    seen_keys.push(key.clone());
+                    seen_keys.len() - 1
+                });
+            pool_group.insert(shard, u32::try_from(group).unwrap_or(u32::MAX));
+
             let manager = diesel_async::pooled_connection::AsyncDieselConnectionManager::<
                 diesel_async::AsyncPgConnection,
             >::new(dsn);
@@ -1129,7 +1667,12 @@ impl ShardedDbPool {
                 })?;
             pools.insert(shard, pool);
         }
-        Ok(Self::from_map(pools, default_shard))
+        let mut this = Self::from_map(pools, default_shard);
+        this.pool_group = pool_group;
+        if let Ok(mut lock) = GLOBAL_SHARDED_POOL.write() {
+            *lock = Some(this.clone());
+        }
+        Ok(this)
     }
 
     /// Resolve the pool that owns a given `ExecutionId`.
@@ -1726,6 +2269,1029 @@ mod tests {
     #[should_panic(expected = "residency key")]
     fn residency_map_with_a_blank_key_panics_at_construction() {
         let _ = router_with(&[0, 1]).with_residency_map([(String::new(), ShardId::new(1))]);
+    }
+
+    // Building a `Pool` never connects, so these need no live database.
+    #[cfg(feature = "db")]
+    fn test_pool() -> DbPool {
+        let manager = diesel_async::pooled_connection::AsyncDieselConnectionManager::<
+            diesel_async::AsyncPgConnection,
+        >::new("postgres://unused/db");
+        DbPool::builder(manager)
+            .max_size(1)
+            .build()
+            .expect("pool builds without connecting")
+    }
+
+    // `from_map` sees a shared pool by object identity: two shard ids
+    // backed by clones of one `Pool` must land in one group (issue #1266).
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_map_groups_cloned_pools_together() {
+        let pool = test_pool();
+        let mut pools = BTreeMap::new();
+        pools.insert(ShardId::new(0), pool.clone());
+        pools.insert(ShardId::new(1), pool);
+        let sharded = ShardedDbPool::from_map(pools, ShardId::new(0));
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "two clones of one pool must collapse to one group"
+        );
+        let mut shards = groups[0].1.clone();
+        shards.sort();
+        assert_eq!(shards, vec![ShardId::new(0), ShardId::new(1)]);
+    }
+
+    // `from_dsns` builds a fresh `Pool` per entry, even for one DSN reused
+    // across two shard ids. Object identity alone would report these as
+    // unrelated. The DSN itself must still group them (issue #1266).
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_groups_shards_sharing_one_dsn() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (ShardId::new(0), "postgres://unused/shared".to_string()),
+                (ShardId::new(1), "postgres://unused/shared".to_string()),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "two shards on the same DSN must collapse to one group, even \
+             though from_dsns built them as two separate Pool objects"
+        );
+        let mut shards = groups[0].1.clone();
+        shards.sort();
+        assert_eq!(shards, vec![ShardId::new(0), ShardId::new(1)]);
+    }
+
+    // Two shards on genuinely different DSNs must never be combined
+    // (issue #1266).
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_keeps_distinct_dsns_separate() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (ShardId::new(0), "postgres://unused/db-a".to_string()),
+                (ShardId::new(1), "postgres://unused/db-b".to_string()),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            2,
+            "two different DSNs must never collapse into one group"
+        );
+    }
+
+    // Two DSNs can reach one physical database while written differently:
+    // different credentials, and an explicit default port versus none
+    // (issue #1266). Comparing the raw strings would miss this.
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_groups_equivalent_dsns_with_different_credentials_and_port() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://alice:secret1@db.example/shared".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://bob:secret2@db.example:5432/shared".to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "same host and database, differing only in credentials and an \
+             explicit default port, must collapse to one group"
+        );
+        let mut shards = groups[0].1.clone();
+        shards.sort();
+        assert_eq!(shards, vec![ShardId::new(0), ShardId::new(1)]);
+    }
+
+    // Same host, different database name: never the same physical
+    // database (issue #1266).
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_keeps_distinct_dbnames_on_the_same_host_separate() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (ShardId::new(0), "postgres://db.example/db-a".to_string()),
+                (ShardId::new(1), "postgres://db.example/db-b".to_string()),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            2,
+            "two different database names on the same host must never \
+             collapse into one group"
+        );
+    }
+
+    // A `search_path` set through `?options=...` selects which schema
+    // `harvest_audit_log` resolves to. Two DSNs differing only there
+    // must never collapse (issue #1266).
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_keeps_distinct_search_path_options_separate() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dschema_a".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dschema_b".to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            2,
+            "different `options` can select a different schema, so these \
+             must never collapse into one group"
+        );
+    }
+
+    // `application_name` and `sslmode` never change which relation a
+    // query resolves against. Two shards on the same database, differing
+    // only in credentials and these tuning parameters, must still
+    // collapse to one group (issue #1266).
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_ignores_connection_only_parameters() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://alice@db.example/shared?application_name=web".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://bob@db.example/shared?application_name=worker&sslmode=require"
+                        .to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "application_name and sslmode never affect relation \
+             resolution, so these must collapse to one group"
+        );
+    }
+
+    // A Unix-socket DSN carries the real endpoint in a `host` query
+    // parameter, not the URI authority. Two such DSNs for different
+    // sockets must never collapse (issue #1266).
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_keeps_distinct_unix_socket_hosts_separate() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgresql:///harvest?host=%2Frun%2Fpg-a".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgresql:///harvest?host=%2Frun%2Fpg-b".to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            2,
+            "different `host` query parameters name different sockets, \
+             so these must never collapse into one group"
+        );
+    }
+
+    // Two Unix-socket DSNs for the *same* socket, named through `host`,
+    // must still collapse to one group (issue #1266).
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_groups_shards_sharing_one_unix_socket_host() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgresql:///harvest?host=%2Frun%2Fpg-a".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgresql:///harvest?host=%2Frun%2Fpg-a".to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "the same `host` query parameter names the same socket, so \
+             these must collapse into one group"
+        );
+    }
+
+    // Unix filesystem paths are case-sensitive: `/run/PG-A` and
+    // `/run/pg-a` name different sockets (issue #1266).
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_keeps_distinctly_cased_socket_paths_separate() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgresql:///harvest?host=%2Frun%2FPG-A".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgresql:///harvest?host=%2Frun%2Fpg-a".to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            2,
+            "a socket path's case is significant, so these must never \
+             collapse into one group"
+        );
+    }
+
+    // A DNS hostname stays case-insensitive even when it arrives through
+    // `host=`, unlike a socket path (issue #1266).
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_groups_shards_sharing_one_hostname_regardless_of_case() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgresql:///harvest?host=DB.EXAMPLE".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgresql:///harvest?host=db.example".to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "a DNS hostname is case-insensitive, so these must collapse \
+             into one group"
+        );
+    }
+
+    // libpq defaults an omitted dbname to the connecting username, so
+    // two users with no explicit dbname reach different databases
+    // (issue #1266).
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_keeps_distinct_users_with_no_explicit_dbname_separate() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (ShardId::new(0), "postgres://alice@db.example".to_string()),
+                (ShardId::new(1), "postgres://bob@db.example".to_string()),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            2,
+            "an omitted dbname defaults to the username, so two \
+             different users must never collapse into one group"
+        );
+    }
+
+    // The username-as-dbname fallback applies only when no path is
+    // given. An explicit, shared dbname still groups regardless of
+    // username (issue #1266).
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_ignores_username_when_dbname_is_explicit() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://alice@db.example/shared".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://bob@db.example/shared".to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "an explicit dbname is not defaulted from the username, so \
+             these must still collapse into one group"
+        );
+    }
+
+    // `url::Url` and `tokio_postgres::Config` disagree on percent-decoding:
+    // `url::Url::path()` returns the raw, still-encoded path, but the real
+    // connector decodes it. Two spellings of one database name must
+    // collapse (issue #1266).
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_groups_percent_encoded_and_plain_dbname_spellings() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (ShardId::new(0), "postgres://db.example/harvest".to_string()),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/%68arvest".to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "`%68` decodes to `h`, so both DSNs name the same database \
+             and must collapse into one group"
+        );
+    }
+
+    // `options` can carry any `-c name=value` GUC, not only
+    // `search_path`. Two DSNs differing only in an unrelated one must
+    // still collapse (issue #1266).
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_ignores_non_search_path_options_flags() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://db.example/shared?options=-c%20application_name%3Dweb".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/shared?options=-c%20application_name%3Dworker"
+                        .to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "`application_name` set through `options` never affects \
+             relation resolution, so these must collapse into one group"
+        );
+    }
+
+    // `hostaddr` pins the actual TCP destination. Two DSNs sharing one
+    // must collapse regardless of how each spells the hostname (issue
+    // #1266).
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_groups_shards_sharing_one_hostaddr_regardless_of_hostname() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://alias-a/shared?hostaddr=10.0.0.5".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://alias-b/shared?hostaddr=10.0.0.5".to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "a shared `hostaddr` names one physical destination, so these \
+             must collapse into one group even though the hostnames differ"
+        );
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_groups_a_numeric_host_with_a_differing_explicit_hostaddr() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://10.0.0.1/shared?hostaddr=10.0.0.2".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://alias/shared?hostaddr=10.0.0.2".to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "an explicit hostaddr alone pins the TCP destination, so a \
+             numeric host text must not also be folded into the address \
+             set -- both DSNs pin the identical server and must collapse"
+        );
+    }
+
+    // The compact `-csearch_path=value` spelling has no space before
+    // `-c`. It is already used elsewhere in this codebase. It must be
+    // recognized the same as the spaced form (issue #1266).
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_recognizes_the_compact_search_path_options_spelling() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://db.example/shared?options=-csearch_path%3Dschema_a".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/shared?options=-csearch_path%3Dschema_b".to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            2,
+            "the compact `-csearch_path=` spelling must select a schema \
+             just as the spaced form does, so these must never collapse"
+        );
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_recognizes_the_long_form_search_path_options_spelling() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://db.example/shared?options=--search_path%3Dschema_a".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/shared?options=--search_path%3Dschema_b".to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            2,
+            "the long-form `--search_path=` spelling must select a schema \
+             just as `-c search_path=` does, so these must never collapse"
+        );
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_recognizes_a_hyphenated_long_form_search_path_name() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://db.example/shared?options=--search-path%3Dschema_a".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/shared?options=--search_path%3Dschema_a".to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "PostgreSQL normalizes a hyphen to an underscore in a \
+             long-form GUC name, so --search-path= and --search_path= \
+             select the same schema and must collapse"
+        );
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_groups_unquoted_names_differing_only_past_the_identifier_length_limit() {
+        let prefix = "a".repeat(63);
+        let name_a = format!("{prefix}x");
+        let name_b = format!("{prefix}y");
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    format!("postgres://db.example/shared?options=-c%20search_path%3D{name_a}"),
+                ),
+                (
+                    ShardId::new(1),
+                    format!("postgres://db.example/shared?options=-c%20search_path%3D{name_b}"),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "PostgreSQL silently truncates an unquoted identifier past \
+             its 63-byte limit, so two names sharing that many bytes \
+             store as the identical name and must collapse"
+        );
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_groups_dsns_whose_search_path_differs_only_by_an_escaped_space() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dtenant%2Cpublic"
+                        .to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dtenant%2C%5C%20public"
+                        .to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "an escaped space in one alias's search_path value must not \
+             stop it from collapsing with the other: PostgreSQL treats \
+             `tenant,public` and `tenant, public` as the same schema list"
+        );
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_groups_search_path_identifiers_that_differ_only_by_case() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://db.example/shared?options=-c%20search_path%3DPUBLIC".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dpublic".to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "PostgreSQL folds an unquoted identifier to lowercase, so \
+             `PUBLIC` and `public` name the same schema and must collapse"
+        );
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_keeps_a_quoted_comma_containing_schema_distinct_from_two_plain_ones() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://db.example/shared?options=-c%20search_path%3D%22tenant%2C%20one%22"
+                        .to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dtenant%2Cone"
+                        .to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            2,
+            "a quoted schema named literally `tenant, one` is one \
+             identifier, distinct from the two unquoted identifiers \
+             `tenant` and `one`, and must never collapse with them"
+        );
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_keeps_a_quoted_comma_containing_schema_distinct_with_no_space_to_hide_behind() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://db.example/shared?options=-c%20search_path%3D%22tenant%2Cone%22"
+                        .to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dtenant%2Cone"
+                        .to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            2,
+            "the one quoted item `tenant,one` and the two unquoted items \
+             `tenant` and `one` must not join to the same string just \
+             because a bare comma also separates joined items -- an \
+             unescaped join collapses both to `tenant,one`"
+        );
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_groups_an_implicit_pg_catalog_with_an_explicit_leading_one() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dpublic".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dpg_catalog%2Cpublic"
+                        .to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "PostgreSQL always searches pg_catalog first when it is \
+             omitted, so `public` and `pg_catalog,public` resolve an \
+             unqualified relation the same way and must collapse"
+        );
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_keeps_an_explicit_trailing_pg_catalog_distinct_from_the_implicit_leading_one() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dpublic".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dpublic%2Cpg_catalog"
+                        .to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            2,
+            "omitting pg_catalog always searches it first, but naming it \
+             explicitly last searches it last -- a genuinely different \
+             resolution order that must never collapse with the implicit one"
+        );
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_groups_a_search_path_with_a_repeated_name() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dpublic".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dpublic%2Cpublic"
+                        .to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "public and public,public search the identical schema in \
+             the identical order, so a repeated name must not stop \
+             these from collapsing into one group"
+        );
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_groups_dsns_whose_search_path_differs_only_by_an_escaped_tab() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dtenant%2Cpublic"
+                        .to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dtenant%2C%5C%09public"
+                        .to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "an escaped tab in one alias's search_path value must not \
+             stop it from collapsing with the other, just as an escaped \
+             space does not"
+        );
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_recognizes_an_uppercase_search_path_guc_name() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://db.example/shared?options=-c%20SEARCH_PATH%3Dshared".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dshared".to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "PostgreSQL parameter names are case-insensitive, so \
+             SEARCH_PATH=shared sets the identical GUC as \
+             search_path=shared and must select the same schema"
+        );
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_groups_an_implicit_pg_temp_with_an_explicit_leading_one() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dpublic".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dpg_temp%2Cpg_catalog%2Cpublic"
+                        .to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "PostgreSQL always searches the session's temporary schema \
+             before pg_catalog when it is omitted, so public and \
+             pg_temp,pg_catalog,public resolve the same way and must \
+             collapse"
+        );
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_keeps_an_explicit_trailing_pg_temp_distinct_from_the_implicit_leading_one() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dpublic".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dpublic%2Cpg_temp"
+                        .to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            2,
+            "omitting pg_temp always searches it first, but naming it \
+             explicitly last searches it last -- a genuinely different \
+             resolution order that must never collapse with the implicit one"
+        );
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_groups_dsns_whose_search_path_differs_only_by_an_escaped_comma() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dpublic".to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dpublic%5C%2Cpublic"
+                        .to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "pg_split_opts removes a backslash before any character, so \
+             public\\,public reaches the server the same as \
+             public,public, and both must select the same schema"
+        );
+    }
+
+    // libpq applies a repeated `-c search_path=...` as a `SET`, in
+    // order, so only the last one has any effect. Two DSNs with the
+    // same effective `search_path` must collapse even when one carries
+    // an earlier, overridden value the other never mentions at all
+    // (issue #1266).
+    #[cfg(feature = "db")]
+    #[test]
+    fn from_dsns_groups_dsns_with_the_same_effective_search_path() {
+        let sharded = ShardedDbPool::from_dsns(
+            [
+                (
+                    ShardId::new(0),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dold%20-c%20search_path%3Dshared"
+                        .to_string(),
+                ),
+                (
+                    ShardId::new(1),
+                    "postgres://db.example/shared?options=-c%20search_path%3Dshared".to_string(),
+                ),
+            ],
+            ShardId::new(0),
+            1,
+        )
+        .expect("pool builds without connecting");
+
+        let groups = sharded.pool_groups();
+        assert_eq!(
+            groups.len(),
+            1,
+            "only the last `-c search_path=` takes effect, so an \
+             overridden earlier value must not stop these from \
+             collapsing into one group"
+        );
     }
 }
 

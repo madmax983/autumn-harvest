@@ -235,7 +235,7 @@ shipped, even one past the retention window. A sweep that removed an unexported
 row would be a silent compliance gap — gone from the database *and* absent from
 the SIEM, with nothing anywhere to show it was lost.
 
-The guard applies when **either** signal says an exporter still owes this
+The guard applies when **any** signal says an exporter still owes this
 shard records:
 
 - **A cursor row exists for the shard.** Durable, shared state, so it works when
@@ -245,6 +245,241 @@ shard records:
 - **A sink is configured in the sweeping process.** Covers the window before the
   exporter's first tick on a shard has created the cursor row at all (freshly
   enabled, newly added to the fleet, or a shard whose pool has been failing).
+- **`RetentionConfig::protect_unexported_audit` is `true`.** Covers a gap the
+  first two signals share (issue #1266). In a split web/worker deployment, the
+  process running retention may have no sink and no cursor row at the same
+  time. This happens before the worker's first successful tick on a shard —
+  a fresh enablement, a newly added shard, or a shard being re-enabled after
+  decommission all have this same gap. Neither of the first two signals can
+  close that window alone. Both need the worker to have reached the shard at
+  least once. Set this flag the same way on every process in the deployment.
+  This closes the window from the moment export is configured, not from the
+  moment it first succeeds.
+
+  ```rust
+  autumn_harvest::retention::RetentionConfig::default()
+      .with_audit_retention_days(90)
+      .with_protect_unexported_audit(true);
+  ```
+
+  Two cheaper fixes were considered and rejected. Seeding the cursor row in a
+  migration cannot work: a shard's own database does not know its own shard
+  id, which is the same reason `ensure_cursor_row` provisions it lazily
+  instead (see `harvest_shard_generation`'s migration, issue #954, for the
+  identical argument). Having the retention process create the row itself
+  cannot work either: that process does not know whether an exporter is
+  coming, which is exactly the information this flag supplies instead.
+
+  Like `is_configured`, this flag overrides a retired cursor too — an
+  earlier draft scoped it to "no cursor row at all" instead, which reopened
+  the exact re-enablement window it exists to close (issue #1266). The two
+  signals therefore share one cost: see "Retiring audit export on a shard"
+  below.
+
+  A fleet has more than one shard, and this flag would otherwise apply to
+  all of them at once. Decommissioning shard A must resume purging there.
+  Turning the flag off fleet-wide to do that would also strip protection
+  from shard B, still mid-bootstrap on the same sweep. Exempt shard A
+  instead:
+
+  ```rust
+  autumn_harvest::retention::RetentionConfig::default()
+      .with_audit_retention_days(90)
+      .with_protect_unexported_audit(true)
+      .excluding_shard_from_protect_unexported_audit(shard_a);
+  ```
+
+  Shard A resumes purging. Every other shard, including a genuinely
+  bootstrapping shard B, stays protected.
+
+  A pre-split staging deployment can back two logical shards with one
+  physical pool. The sweep detects this on its own and combines their
+  decisions conservatively — protecting the shared pool whenever any
+  aliased shard wants protection — so exempting shard A never
+  accidentally strips shard B's protection just because they share a
+  database. No operator action is needed for this case.
+
+  The per-row pending check also needs to know which shard ids share the
+  pool, not only the combined decision. A row already acknowledged by
+  one colocated shard is not acknowledged by another that has not
+  ticked yet and so has no cursor row there at all.
+  `purge_old_audit_records` takes this as `colocated_shard_ids`, matched
+  by identity rather than counted — a decommissioned shard's cursor row
+  is retired, never deleted, so a shard removed from the fleet entirely
+  can leave a row behind that would make a mere count look complete. The
+  list names every shard sharing the pool except one an operator has
+  explicitly exempted. That is not the same list as "shards that
+  currently want protection": when the flag is unset fleet-wide (the
+  common case), no shard wants protection today, yet every shard's
+  cursor still matters exactly as it did before the flag existed, so all
+  of them belong in the list. An exempted shard that never ticks has no
+  cursor row of its own by design, and naming it anyway would block
+  purging rows a still-protected, colocated shard has genuinely
+  acknowledged. Only its explicit exemption removes it. The sweep
+  sources the list from the same `ShardedDbPool::pool_groups()` call
+  that computes the combined decision, so this needs no separate
+  operator action either.
+
+  The acknowledgment check itself is scoped the same way: a colocated
+  shard's `last_acked_seq` only protects rows once that shard's id
+  appears in `colocated_shard_ids`. A shard excluded from the list keeps
+  its last cursor row, frozen at whatever it last acknowledged before
+  decommissioning, and that stale row must not go on shielding rows a
+  still-relevant, colocated shard has already fully acknowledged.
+
+  A shard still named in `colocated_shard_ids` — the default policy
+  never excludes anyone — can also be decommissioned, and its retired
+  cursor's stale ack is ignored the same way, but only while
+  `protect_unexported_audit` is not itself protecting this pool group.
+  `decommission_cursor`'s own guarantee is that retiring a cursor "is
+  precisely what lets retention purge" that shard's rows; without this,
+  a decommissioned shard's frozen ack would block a still-active
+  colocated shard's rows forever, since a retired cursor row is never
+  deleted. Gating this on `protect_unexported_audit` preserves the
+  flag's guarantee for a shard mid-re-enablement: an operator who keeps
+  the flag protecting this group through a decommission-then-resume
+  transition still sees the re-enabling shard's retired cursor treated
+  as pending, exactly as before this change, until its next tick
+  un-retires it.
+
+  Detection covers both ways a fleet builds a `ShardedDbPool`.
+  `ShardedDbPool::from_map` can receive one cloned `Pool` under two shard
+  IDs; the sweep groups these by pool identity. `ShardedDbPool::from_dsns`
+  builds a separate `Pool` per entry even for two connection strings that
+  reach one database, so identity alone cannot see the alias; the sweep
+  groups these by a canonical form of the DSN instead (host, port, path,
+  and the `options` query parameter, ignoring everything else including
+  credentials), compared before the DSN is consumed into a pool. The
+  canonical form is parsed with `tokio_postgres::Config`, the exact
+  parser `diesel_async` hands the DSN to at connect time — the same
+  choice `backup_verify.rs`'s `parse_dsn_identity` makes, since `url::Url`
+  disagrees with it on percent-decoding, on `?dbname=`/`?host=`/`?port=`/
+  `?hostaddr=` overrides, and on comma-separated multi-host DSNs.
+  Only a `search_path` setting is extracted from `options` (`options`
+  itself can carry `-c search_path=...`, `-csearch_path=...`, or
+  PostgreSQL's long-form `--search_path=...`, all three recognized, but
+  also any other GUC an operator sets, so the whole string is not kept).
+  The GUC name is matched case-insensitively in all three spellings,
+  since PostgreSQL parameter names are: `SEARCH_PATH=shared` sets the
+  identical GUC as `search_path=shared`. The long form also normalizes
+  a hyphen to an underscore in the name before matching, the same way
+  Postgres maps a `--long-option` to its GUC, so `--search-path=shared`
+  sets the identical GUC as `--search_path=shared`.
+  Postgres applies repeated `-c` flags in order, so
+  a later `-c search_path=...` overrides an earlier one; the extraction
+  keeps only the last occurrence, matching that sequential-`SET`
+  semantic rather than the first or a concatenation. `search_path` picks
+  which schema a query resolves against — two DSNs differing only there
+  must stay in separate groups, and two DSNs whose last `search_path`
+  setting agrees must stay in one even if an earlier, overridden setting
+  differs. Splitting `options` into arguments honors libpq's own
+  escaping: a backslash before any other character — not only
+  whitespace — is consumed by `pg_split_opts`, which removes it
+  unconditionally before the value ever reaches `SplitIdentifierString`,
+  so `public\,public` reaches the server the same as `public,public`.
+  Keeping the value from being truncated at an escaped space or tab
+  falls out of this same general rule. The extracted value is then
+  parsed as a
+  Postgres identifier list, the same grammar `SplitIdentifierString`
+  uses for `search_path` server-side: comma-separated, with
+  insignificant whitespace around each name, an unquoted name folded to
+  lowercase, and a double-quoted name kept verbatim — case, embedded
+  commas, embedded spaces, and all, with `""` inside one read as a
+  literal quote. `tenant,public` and `tenant, public` compare equal, and
+  `PUBLIC` collapses with `public`, but a quoted `"tenant, one"` (one
+  schema) never collapses with the two unquoted schemas `tenant` and
+  `one`. Each parsed name, quoted or not, is then truncated to
+  Postgres's identifier length limit (`NAMEDATALEN` minus one, 63
+  bytes), matching what `SplitIdentifierString` itself does — two
+  names sharing their first 63 bytes store as the identical name and
+  must key the same. A value that does not fit this grammar is
+  compared unparsed, the conservative fallback. Each parsed name is
+  escaped before the
+  names are rejoined into the key, quoting its own backslashes and
+  commas: joining with a bare comma would let a quoted name's own
+  embedded comma read back as a name boundary, so the one name
+  `tenant,one` and the two names `tenant` and `one` would otherwise join
+  to the identical string. `pg_catalog` is inserted at the front of the
+  parsed list when it is not already named: Postgres always searches
+  `pg_catalog` first when it is omitted, so `public` and
+  `pg_catalog,public` resolve an unqualified relation identically and
+  must key the same, while `public,pg_catalog` (an explicit, trailing
+  `pg_catalog`) names a genuinely different order and stays distinct.
+  `pg_temp`, the session's temporary-object schema, is inserted the
+  same way but ahead of `pg_catalog`, matching Postgres's own
+  precedence when both are implicit. A repeated name is then dropped,
+  keeping only its first occurrence:
+  `public` and `public,public` search the identical schema in the
+  identical order, so a later repeat changes nothing about where a
+  relation resolves.
+  Every other query parameter (`application_name`, `sslmode`, and so on)
+  is dropped, since none of them changes which relation a query resolves
+  against — except `host`, `hostaddr`, and `port`: a Unix-socket DSN
+  carries its real endpoint there rather than in the URI authority
+  (`postgresql:///harvest?host=%2Frun%2Fpg`), so the key falls back to
+  them when the authority host is empty. `hostaddr` wins over `host`
+  outright whenever it is given at all, matching `backup_verify.rs`'s
+  `parse_dsn_identity`: it pins the actual TCP destination, so two DSNs
+  sharing one stay one pool however differently each spells the
+  hostname. This holds even when `host` is itself a numeric address: an
+  explicit `hostaddr` alone decides the destination, so a differing
+  numeric `host` is discarded rather than folded in alongside it. A
+  resolved host is lowercased only when it does not start
+  with `/`: a DNS name is case-insensitive, but a Unix-socket path is a
+  case-sensitive filesystem path (`/run/PG-A` and `/run/pg-a` name
+  different sockets). A DSN with no path is not treated as naming no
+  database, since libpq defaults an omitted `dbname` to the connecting
+  username — the key uses the username only in that case, never when a
+  path is present.
+
+  Four gaps are accepted rather than chased further. A host alias (two
+  hostnames resolving to one address) needs a live connection to detect
+  and is left undetected. A role's own `search_path` set server-side with
+  `ALTER ROLE ... SET search_path` is invisible in the DSN, and not fully
+  covered by keeping the username, since the same role name can be
+  granted identical or different search paths across environments — two
+  DSNs for one database under different usernames are also a documented
+  topology (`harvest shard rebalance`, issue #964), so treating different
+  usernames as different pools was rejected as reopening a worse bug. A
+  multi-host DSN's hosts and ports are sorted and deduplicated
+  independently rather than paired positionally, so two DSNs that pair
+  the same hosts and ports differently can compare equal even though they
+  name different endpoints; `from_dsns` is built for one host per shard
+  entry, where this never arises, and getting it wrong skips a purge
+  rather than causing a premature one, so it is left for whoever first
+  needs multi-host entries to fix. Two different `search_path` orders can
+  also resolve one unqualified relation to the identical schema when the
+  earlier-searched schemas in one order simply do not define that
+  relation — `tenant_a,public` and `tenant_b,public` both resolve
+  `harvest_audit_log` from `public` whenever neither tenant schema
+  defines its own copy. Unlike the other three gaps, this one is not
+  conservative: two aliases of one physical table can compare as
+  distinct pools, the same under-merging risk this key exists to close
+  elsewhere. Detecting it needs to know what each named schema actually
+  contains, a live catalog lookup rather than a fact the DSN text
+  carries, so it is out of reach for the same reason as the host alias
+  gap: building a pool must stay a pure, local operation with no network
+  access.
+
+  The remaining cost is operational, not architectural: an operator must
+  remember to set the flag on every process, including ones added later.
+  Forgetting it only reopens the original bootstrap window; it never causes
+  data loss beyond that.
+
+  One further gap is accepted rather than fixed here: exempting shard A
+  restores purging only if the *sweeping process itself* has no local
+  sink installed (`is_configured()` is process-wide, not per-shard, and
+  predates this guard). A process that hosts a live sink for some other
+  shard on the same pool group leaves `is_configured()` true, which
+  still blocks shard A's purge even after its exemption. Narrowing
+  `is_configured()` to "does this specific shard have a live sink" needs
+  to know which shard a given sink instance actually serves — information
+  this guard does not have today, and getting it wrong risks the opposite,
+  dangerous direction: treating a shard's own still-live export as
+  finished. Until that scoping exists, an operator retiring shard A on a
+  process that also actively exports another colocated shard must stop
+  that process's sink too, exactly as the pre-existing `is_configured()`
+  trade already required before per-shard exemption existed.
 
 The guard is deliberately **not** time-based. An earlier revision expired it 24
 hours after the exporter's last heartbeat, so a long worker outage lifted it. A
@@ -276,6 +511,11 @@ reach the SIEM.
 Stopping the exporter alone does **not** restore purging — the guard keys on
 the cursor row, not on the sweeping process's sink configuration, which is what
 makes it safe across a split web/worker deployment. Both steps are required.
+Where `RetentionConfig::protect_unexported_audit` also covers this shard on
+the sweeping process, it is a third thing to clear: purging does not resume
+for a decommissioned shard while any of the three signals still holds. Add
+the shard to the exempt set rather than disabling the flag fleet-wide, or
+every other shard loses its bootstrap protection too.
 
 Re-enabling export afterwards is safe: the next exporter tick un-retires the
 cursor and resumes from the preserved `last_assigned_seq`, so new records
