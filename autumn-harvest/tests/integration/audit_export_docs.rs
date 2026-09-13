@@ -186,6 +186,13 @@ fn upgrade_guide_does_not_restate_the_false_claim() {
         "{}: the audit-export row must reference issue #1272",
         path.display()
     );
+    assert!(
+        !contains_collapsed(&text, "not zero-cost until an audit sink is configured"),
+        "{}: 'until configured' implies a sink removes the cost, but index \
+         maintenance applies regardless of configuration — say 'when no \
+         audit sink is configured' instead",
+        path.display()
+    );
 }
 
 /// Issue #1272's own fix added a "bounded by the retention window" claim.
